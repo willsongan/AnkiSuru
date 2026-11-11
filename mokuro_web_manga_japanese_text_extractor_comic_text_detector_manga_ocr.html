@@ -38,18 +38,25 @@
       border: 2px solid rgba(79, 70, 229, 0.85);
       background-color: rgba(79, 70, 229, 0.08);
       border-radius: 4px;
-      cursor: pointer;
-      transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+      cursor: grab;
+      touch-action: none;
+      user-select: none;
+      transition: background-color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+    }
+    .bbox-rect.dragging {
+      cursor: grabbing;
+      transition: none;
     }
     .bbox-rect:hover {
-      background-color: rgba(79, 70, 229, 0.18);
+      background-color: rgba(79, 70, 229, 0.16);
       border-color: #4338ca;
+      z-index: 15;
     }
     .bbox-rect.active {
       border-color: #e11d48;
-      background-color: rgba(225, 29, 72, 0.14);
-      box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.25);
-      z-index: 20;
+      background-color: rgba(225, 29, 72, 0.12);
+      box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.24);
+      z-index: 25;
     }
     .bbox-badge {
       position: absolute;
@@ -68,9 +75,68 @@
       justify-content: center;
       box-shadow: 0 2px 4px rgba(15, 23, 42, 0.25);
       pointer-events: none;
+      z-index: 2;
     }
     .bbox-rect.active .bbox-badge {
       background: #e11d48;
+    }
+    .bbox-handle {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: #ffffff;
+      border: 2px solid #4f46e5;
+      border-radius: 2px;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 3;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25);
+    }
+    .bbox-rect:hover .bbox-handle,
+    .bbox-rect.active .bbox-handle {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .bbox-rect.active .bbox-handle {
+      border-color: #e11d48;
+    }
+    .bbox-handle-nw { top: -5px; left: -5px; cursor: nwse-resize; }
+    .bbox-handle-n  { top: -5px; left: calc(50% - 5px); cursor: ns-resize; }
+    .bbox-handle-ne { top: -5px; right: -5px; cursor: nesw-resize; }
+    .bbox-handle-e  { top: calc(50% - 5px); right: -5px; cursor: ew-resize; }
+    .bbox-handle-se { bottom: -5px; right: -5px; cursor: nwse-resize; }
+    .bbox-handle-s  { bottom: -5px; left: calc(50% - 5px); cursor: ns-resize; }
+    .bbox-handle-sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
+    .bbox-handle-w  { top: calc(50% - 5px); left: -5px; cursor: ew-resize; }
+    .bbox-quickbar {
+      position: absolute;
+      left: 0;
+      top: -28px;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      background: #0f172a;
+      color: #ffffff;
+      padding: 2px 4px;
+      border-radius: 6px;
+      box-shadow: 0 3px 8px rgba(15, 23, 42, 0.3);
+      z-index: 30;
+      white-space: nowrap;
+    }
+    .bbox-quickbar.flip-below {
+      top: auto;
+      bottom: -28px;
+    }
+    .dropzone-active {
+      border-color: #4f46e5 !important;
+      background-color: #eef2ff !important;
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18);
+    }
+    .page-drop-above {
+      box-shadow: inset 0 3px 0 0 #4f46e5 !important;
+    }
+    .page-drop-below {
+      box-shadow: inset 0 -3px 0 0 #4f46e5 !important;
     }
     .custom-scroll::-webkit-scrollbar {
       width: 6px;
@@ -201,19 +267,11 @@
   <!-- Main Workspace -->
   <main id="dropZoneRoot" class="flex-1 max-w-[1600px] w-full mx-auto p-3 sm:p-4 grid grid-cols-1 lg:grid-cols-12 gap-4 relative">
 
-    <!-- Drag Overlay -->
-    <div id="dragOverlay" class="hidden fixed inset-0 z-40 bg-indigo-950/50 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-none">
-      <div class="bg-white rounded-2xl border-2 border-dashed border-indigo-500 p-8 max-w-md text-center shadow-2xl">
-        <div class="w-12 h-12 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center mx-auto mb-3">
-          <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
-        </div>
-        <p class="text-base font-bold text-slate-900">Drop Manga Folder or Page Pictures</p>
-        <p class="text-xs text-slate-500 mt-1">Supports JPG, PNG, WEBP, AVIF, BMP sorted automatically by page number</p>
-      </div>
-    </div>
+    <!-- Inert placeholder retained for DOM compatibility (full-screen drop disabled) -->
+    <div id="dragOverlay" class="hidden" aria-hidden="true"></div>
 
-    <!-- Left Column: Pages Queue & Dropzone -->
-    <section class="lg:col-span-3 xl:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden max-h-[340px] lg:max-h-[calc(100vh-148px)]">
+    <!-- Left Column: Pages Queue & Designated Dropzone -->
+    <section class="lg:col-span-3 xl:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden max-h-[380px] lg:max-h-[calc(100vh-148px)]">
       <div class="p-3 border-b border-slate-200 flex items-center justify-between gap-2">
         <div>
           <h2 class="text-xs font-bold uppercase tracking-wider text-slate-500">Manga Pages</h2>
@@ -224,18 +282,30 @@
         </button>
       </div>
 
-      <!-- Mini Drop Target -->
-      <div id="sidebarDropTarget" class="mx-2.5 mt-2.5 p-2.5 rounded-lg border border-dashed border-slate-300 bg-slate-50 hover:border-indigo-400 hover:bg-indigo-50/40 transition text-center cursor-pointer">
-        <p class="text-xs font-semibold text-slate-700">+ Drop Folder or Images</p>
-        <p class="text-[11px] text-slate-500">or click to browse pictures</p>
+      <!-- Designated Drop Folder or Images Area -->
+      <div id="sidebarDropTarget" class="mx-2.5 mt-2.5 p-3 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 hover:border-indigo-400 hover:bg-indigo-50/40 transition text-center cursor-pointer select-none">
+        <div class="w-7 h-7 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center mx-auto mb-1 pointer-events-none">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+        </div>
+        <p class="text-xs font-semibold text-slate-700 pointer-events-none">Drop Folder or Images</p>
+        <p class="text-[11px] text-slate-500 mt-0.5 pointer-events-none">JPG, PNG, WEBP · click for pictures</p>
+        <div class="mt-1.5 flex items-center justify-center gap-1.5">
+          <button id="btnDropzoneFolder" type="button" class="px-2 py-0.5 rounded bg-white border border-slate-300 hover:border-indigo-400 text-[10px] font-semibold text-slate-700 hover:text-indigo-700 transition">
+            Browse Folder
+          </button>
+        </div>
       </div>
 
       <div id="sampleNoticeBanner" class="hidden mx-2.5 mt-2 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-800">
-        Sample pages loaded for testing. Upload a folder or pictures anytime to replace them.
+        Sample pages loaded for testing. Drop or upload your own pages above to replace them.
+      </div>
+
+      <div class="px-3 pt-2 pb-0.5 flex items-center justify-between text-[10px] text-slate-400">
+        <span>Drag or use ↑↓ to reorder</span>
       </div>
 
       <!-- Page Thumbnails List -->
-      <div id="pageListContainer" class="flex-1 overflow-y-auto custom-scroll p-2.5 space-y-2"></div>
+      <div id="pageListContainer" class="flex-1 overflow-y-auto custom-scroll p-2.5 pt-1.5 space-y-2 relative"></div>
     </section>
 
     <!-- Center Column: Interactive Manga Page Viewer & Box Editor -->
@@ -246,7 +316,7 @@
           <button id="btnPrevPage" type="button" class="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40" title="Previous page">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
           </button>
-          <span id="activePageTitle" class="text-xs font-semibold text-slate-800 truncate max-w-[160px] sm:max-w-[240px]">No page selected</span>
+          <span id="activePageTitle" class="text-xs font-semibold text-slate-800 truncate max-w-[150px] sm:max-w-[220px]">No page selected</span>
           <button id="btnNextPage" type="button" class="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40" title="Next page">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
           </button>
@@ -259,6 +329,9 @@
           <button id="btnDrawBoxMode" type="button" class="px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 transition" title="Drag on the manga page to manually add a speech bubble box">
             + Draw Box
           </button>
+          <button id="btnDeleteSelectedBox" type="button" disabled class="px-2.5 py-1 rounded-lg text-xs font-medium border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 disabled:opacity-40 disabled:pointer-events-none transition" title="Delete selected detector box (Delete / Backspace)">
+            Delete Box
+          </button>
           <button id="btnRedetectPage" type="button" class="px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 transition" title="Run text region detection on this page">
             Detect Boxes
           </button>
@@ -270,6 +343,12 @@
         </div>
       </div>
 
+      <!-- Subtle Box Manipulation Shortcut Strip -->
+      <div class="px-3 py-1 bg-slate-100/80 border-b border-slate-200/80 text-[11px] text-slate-600 flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
+        <span><strong>Boxes:</strong> Drag to move · Drag handles to resize · Click ✕ or press <kbd class="px-1 py-0.2 bg-white border border-slate-300 rounded text-[10px]">Del</kbd> to delete</span>
+        <span class="text-slate-500">Keyboard: <kbd class="px-1 bg-white border border-slate-300 rounded text-[10px]">↑↓←→</kbd> move (<kbd class="px-1 bg-white border border-slate-300 rounded text-[10px]">Shift</kbd>=fast) · <kbd class="px-1 bg-white border border-slate-300 rounded text-[10px]">Ctrl</kbd>+Arrows resize</span>
+      </div>
+
       <!-- Draw Mode Helper Banner -->
       <div id="drawModeBanner" class="hidden px-3 py-1.5 bg-rose-50 border-b border-rose-200 text-xs text-rose-800 flex items-center justify-between">
         <span><strong>Draw Bubble Mode:</strong> Click and drag over any speech bubble or vertical line on the page to add &amp; OCR it.</span>
@@ -277,13 +356,13 @@
       </div>
 
       <!-- Canvas Stage -->
-      <div id="viewerViewport" class="flex-1 overflow-auto custom-scroll checker-bg flex items-start justify-center p-4 relative select-none">
+      <div id="viewerViewport" tabindex="0" class="flex-1 overflow-auto custom-scroll checker-bg flex items-start justify-center p-5 relative select-none focus:outline-none">
         <!-- Empty State -->
         <div id="emptyViewerState" class="hidden my-auto bg-white/95 rounded-2xl border border-slate-200 p-6 sm:p-8 max-w-md text-center shadow-sm">
           <div class="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto mb-3 font-bold text-xl jp-text">あ</div>
           <h3 class="text-base font-bold text-slate-900">Upload Manga Pages to Extract Japanese Text</h3>
           <p class="text-xs text-slate-600 mt-1.5 leading-relaxed">
-            Select an entire manga chapter folder or multiple page images, then press <strong>Extract All Japanese Text</strong>. Everything runs privately in your browser.
+            Drop a folder or JPG/PNG images into the <strong>Drop Folder or Images</strong> box on the left, then press <strong>Extract All Japanese Text</strong>.
           </p>
           <div class="mt-4 flex flex-wrap items-center justify-center gap-2">
             <button id="btnEmptyUploadFolder" type="button" class="px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800">Upload Folder</button>
@@ -292,8 +371,8 @@
           </div>
         </div>
 
-        <!-- Image + Interactive Overlay Wrapper -->
-        <div id="stageImageWrapper" class="relative inline-block shadow-md rounded bg-white overflow-hidden">
+        <!-- Image + Interactive Overlay Wrapper (overflow visible so handles & quickbars near edges aren't clipped) -->
+        <div id="stageImageWrapper" class="relative inline-block shadow-md rounded bg-white">
           <img id="activePageImage" alt="Selected manga page" class="block max-w-full h-auto select-none pointer-events-none" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" />
           <div id="bboxOverlayLayer" class="absolute inset-0"></div>
           <div id="rubberBandBox" class="hidden absolute border-2 border-rose-600 bg-rose-500/15 pointer-events-none rounded"></div>
@@ -445,7 +524,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         ctdOnnx: 'https://huggingface.co/HighLiuk/japanese-onnx-models/resolve/main/comictextdetector.onnx'
       };
 
-      const IMAGE_EXT_RE = /\.(jpe?g|png|webp|avif|bmp|gif)$/i;
+      const IMAGE_EXT_RE = /\.(jpe?g|jfif|pjpeg|pjp|png|webp|avif|bmp|gif)$/i;
       const naturalCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
       // Application State
@@ -506,6 +585,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         pagesSummaryCount: document.getElementById('pagesSummaryCount'),
         btnClearPages: document.getElementById('btnClearPages'),
         sidebarDropTarget: document.getElementById('sidebarDropTarget'),
+        btnDropzoneFolder: document.getElementById('btnDropzoneFolder'),
         sampleNoticeBanner: document.getElementById('sampleNoticeBanner'),
         pageListContainer: document.getElementById('pageListContainer'),
         btnPrevPage: document.getElementById('btnPrevPage'),
@@ -513,6 +593,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         activePageTitle: document.getElementById('activePageTitle'),
         btnToggleBoxes: document.getElementById('btnToggleBoxes'),
         btnDrawBoxMode: document.getElementById('btnDrawBoxMode'),
+        btnDeleteSelectedBox: document.getElementById('btnDeleteSelectedBox'),
         btnRedetectPage: document.getElementById('btnRedetectPage'),
         btnZoomOut: document.getElementById('btnZoomOut'),
         btnZoomFit: document.getElementById('btnZoomFit'),
@@ -1679,53 +1760,155 @@ mokuro "/path/to/manga/volume_folder"</pre>
         showToast('Loaded ' + newPages.length + ' manga page(s). Ready to extract!');
       }
 
-      async function collectDroppedFiles(dataTransfer) {
-        const items = dataTransfer.items;
-        if (!items || items.length === 0) {
-          return Array.from(dataTransfer.files || []);
-        }
+      // Synchronously capture files, FileSystemEntries, and FileSystemHandles BEFORE any await
+      // (browsers clear DataTransfer.files and DataTransfer.items as soon as the drop callback yields)
+      function snapshotDataTransferSync(dataTransfer) {
+        const directFiles = Array.from((dataTransfer && dataTransfer.files) || []);
+        const itemFiles = [];
         const entries = [];
-        for (let i = 0; i < items.length; i++) {
-          const item = items[i];
-          if (item.webkitGetAsEntry) {
-            const entry = item.webkitGetAsEntry();
-            if (entry) entries.push(entry);
-          } else if (item.kind === 'file') {
-            const f = item.getAsFile();
-            if (f) entries.push({ isFile: true, _directFile: f });
+        const handlePromises = [];
+        let sawDirectory = false;
+
+        const items = dataTransfer && dataTransfer.items;
+        if (items) {
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            if (!item || item.kind !== 'file') continue;
+
+            let syncFile = null;
+            if (typeof item.getAsFile === 'function') {
+              try { syncFile = item.getAsFile(); } catch (_e) { syncFile = null; }
+            }
+            if (syncFile) itemFiles.push(syncFile);
+
+            if (typeof item.getAsFileSystemHandle === 'function') {
+              try {
+                handlePromises.push(item.getAsFileSystemHandle().catch(() => null));
+              } catch (_e) { /* ignore */ }
+            }
+
+            const getEntryFn = item.webkitGetAsEntry || item.getAsEntry;
+            if (typeof getEntryFn === 'function') {
+              try {
+                const entry = getEntryFn.call(item);
+                if (entry) {
+                  if (entry.isDirectory) sawDirectory = true;
+                  entries.push({ entry, fallbackFile: syncFile });
+                  continue;
+                }
+              } catch (_e) { /* ignore */ }
+            }
+
+            if (syncFile) {
+              entries.push({ entry: null, fallbackFile: syncFile });
+            }
           }
         }
 
+        return { directFiles, itemFiles, entries, handlePromises, sawDirectory };
+      }
+
+      async function resolveDroppedSnapshot(snap) {
         const collected = [];
-        async function traverse(entry, prefix) {
-          if (entry._directFile) {
-            collected.push(entry._directFile);
+
+        function withTimeout(promise, ms, fallbackVal) {
+          return Promise.race([
+            promise,
+            new Promise((resolve) => setTimeout(() => resolve(fallbackVal), ms))
+          ]);
+        }
+
+        async function traverseEntry(entry, prefix, fallbackFile) {
+          if (!entry) {
+            if (fallbackFile) collected.push(fallbackFile);
+            return;
+          }
+          // Top-level dropped files (like .jpg/.png) already have a synchronous File object
+          if (entry.isFile && !prefix && fallbackFile && fallbackFile.size > 0) {
+            collected.push(fallbackFile);
             return;
           }
           if (entry.isFile) {
-            const file = await new Promise((res) => entry.file(res, () => res(null)));
-            if (file) {
+            const file = await withTimeout(new Promise((res) => {
               try {
-                Object.defineProperty(file, 'relativePath', { value: prefix + file.name });
+                entry.file(res, () => res(fallbackFile || null));
+              } catch (_e) {
+                res(fallbackFile || null);
+              }
+            }), 900, fallbackFile || null);
+            const chosen = file || fallbackFile;
+            if (chosen) {
+              try {
+                Object.defineProperty(chosen, 'relativePath', {
+                  value: prefix + chosen.name,
+                  configurable: true
+                });
               } catch (_e) { /* ignore */ }
-              collected.push(file);
+              collected.push(chosen);
             }
           } else if (entry.isDirectory) {
             const reader = entry.createReader();
-            let batch = [];
-            do {
-              batch = await new Promise((res) => reader.readEntries(res, () => res([])));
+            let guard = 0;
+            while (guard++ < 200) {
+              const batch = await withTimeout(new Promise((res) => {
+                try {
+                  reader.readEntries(res, () => res([]));
+                } catch (_e) {
+                  res([]);
+                }
+              }), 1200, []);
+              if (!batch || batch.length === 0) break;
               for (const child of batch) {
-                await traverse(child, prefix + entry.name + '/');
+                await traverseEntry(child, prefix + entry.name + '/', null);
               }
-            } while (batch.length > 0);
+            }
           }
         }
 
-        for (const e of entries) {
-          await traverse(e, '');
+        for (const item of snap.entries) {
+          await traverseEntry(item.entry, '', item.fallbackFile);
         }
-        return collected.length > 0 ? collected : Array.from(dataTransfer.files || []);
+
+        // Fallback 2: Modern FileSystemHandle API (if webkitGetAsEntry directory reader was restricted)
+        if (collected.length === 0 && snap.handlePromises.length > 0) {
+          async function traverseHandle(handle, prefix) {
+            if (!handle) return;
+            if (handle.kind === 'file' && typeof handle.getFile === 'function') {
+              try {
+                const f = await handle.getFile();
+                if (f) {
+                  try {
+                    Object.defineProperty(f, 'relativePath', { value: prefix + f.name, configurable: true });
+                  } catch (_e) { /* ignore */ }
+                  collected.push(f);
+                }
+              } catch (_e) { /* ignore */ }
+            } else if (handle.kind === 'directory' && typeof handle.values === 'function') {
+              snap.sawDirectory = true;
+              try {
+                for await (const child of handle.values()) {
+                  await traverseHandle(child, prefix + handle.name + '/');
+                }
+              } catch (_e) { /* ignore */ }
+            }
+          }
+          const handles = await Promise.all(snap.handlePromises);
+          for (const h of handles) {
+            await traverseHandle(h, '');
+          }
+        }
+
+        // Fallback 3: Synchronous File snapshots (always works for dropped .jpg/.png files even in strict iframes)
+        if (collected.length === 0) {
+          const syncPool = snap.directFiles.length > 0 ? snap.directFiles : snap.itemFiles;
+          for (const f of syncPool) {
+            if (f && (f.size > 0 || IMAGE_EXT_RE.test(f.name || ''))) {
+              collected.push(f);
+            }
+          }
+        }
+
+        return { files: collected, sawDirectory: snap.sawDirectory };
       }
 
       // -----------------------------------------------------------------------
@@ -1939,6 +2122,26 @@ mokuro "/path/to/manga/volume_folder"</pre>
         renderRightPanel();
       }
 
+      function movePageOrder(fromIdx, toIdx) {
+        if (state.isExtracting) return;
+        if (fromIdx < 0 || fromIdx >= state.pages.length) return;
+        if (toIdx < 0 || toIdx >= state.pages.length || fromIdx === toIdx) return;
+        const [moved] = state.pages.splice(fromIdx, 1);
+        state.pages.splice(toIdx, 0, moved);
+        renderAll();
+      }
+
+      // Pointer-based page list drag reordering (works reliably in sandboxed iframes without colliding with OS file drop)
+      let pageSortDrag = null;
+      let suppressNextPageClick = false;
+
+      function clearPageDropIndicators() {
+        const cards = el.pageListContainer.querySelectorAll('[data-page-idx]');
+        cards.forEach((c) => {
+          c.classList.remove('page-drop-above', 'page-drop-below', 'opacity-50');
+        });
+      }
+
       function renderPageList() {
         const count = state.pages.length;
         el.pagesSummaryCount.textContent = count + (count === 1 ? ' page loaded' : ' pages loaded');
@@ -1960,16 +2163,24 @@ mokuro "/path/to/manga/volume_folder"</pre>
         state.pages.forEach((page, idx) => {
           const isSelected = page.id === state.selectedPageId;
           const card = document.createElement('div');
+          card.setAttribute('data-page-idx', String(idx));
           card.className =
-            'group flex items-center gap-2.5 p-2 rounded-lg border cursor-pointer transition ' +
+            'group flex items-center gap-2 p-2 rounded-lg border cursor-pointer select-none transition ' +
             (isSelected
               ? 'border-indigo-500 bg-indigo-50/70 shadow-sm'
               : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50');
 
+          // Drag Grip Handle
+          const grip = document.createElement('div');
+          grip.className = 'text-slate-400 hover:text-indigo-600 cursor-grab active:cursor-grabbing px-0.5 py-2 shrink-0 touch-none';
+          grip.title = 'Drag up or down to rearrange page order';
+          grip.innerHTML = '<svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 16 16"><circle cx="5" cy="3" r="1.4"/><circle cx="11" cy="3" r="1.4"/><circle cx="5" cy="8" r="1.4"/><circle cx="11" cy="8" r="1.4"/><circle cx="5" cy="13" r="1.4"/><circle cx="11" cy="13" r="1.4"/></svg>';
+
           const thumb = document.createElement('img');
           thumb.src = page.url;
           thumb.alt = page.name;
-          thumb.className = 'w-10 h-14 object-cover rounded border border-slate-200 bg-slate-100 shrink-0';
+          thumb.draggable = false;
+          thumb.className = 'w-9 h-13 object-cover rounded border border-slate-200 bg-slate-100 shrink-0 pointer-events-none';
 
           const meta = document.createElement('div');
           meta.className = 'min-w-0 flex-1';
@@ -2008,11 +2219,37 @@ mokuro "/path/to/manga/volume_folder"</pre>
           meta.appendChild(nameP);
           meta.appendChild(previewP);
 
+          // Rearrange Up/Down + Delete Controls
+          const controlsCol = document.createElement('div');
+          controlsCol.className = 'flex flex-col items-center gap-0.5 shrink-0';
+
+          const upBtn = document.createElement('button');
+          upBtn.type = 'button';
+          upBtn.title = 'Move page up';
+          upBtn.disabled = idx === 0 || state.isExtracting;
+          upBtn.className = 'p-0.5 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 disabled:opacity-25 disabled:pointer-events-none transition';
+          upBtn.innerHTML = '<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>';
+          upBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            movePageOrder(idx, idx - 1);
+          });
+
+          const downBtn = document.createElement('button');
+          downBtn.type = 'button';
+          downBtn.title = 'Move page down';
+          downBtn.disabled = idx === count - 1 || state.isExtracting;
+          downBtn.className = 'p-0.5 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 disabled:opacity-25 disabled:pointer-events-none transition';
+          downBtn.innerHTML = '<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>';
+          downBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            movePageOrder(idx, idx + 1);
+          });
+
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
           delBtn.title = 'Remove page';
-          delBtn.className = 'opacity-0 group-hover:opacity-100 p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition shrink-0';
-          delBtn.innerHTML = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>';
+          delBtn.className = 'p-0.5 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition';
+          delBtn.innerHTML = '<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>';
           delBtn.addEventListener('click', (ev) => {
             ev.stopPropagation();
             if (state.isExtracting) return;
@@ -2027,10 +2264,32 @@ mokuro "/path/to/manga/volume_folder"</pre>
             renderAll();
           });
 
+          controlsCol.appendChild(upBtn);
+          controlsCol.appendChild(downBtn);
+          controlsCol.appendChild(delBtn);
+
+          card.appendChild(grip);
           card.appendChild(thumb);
           card.appendChild(meta);
-          card.appendChild(delBtn);
-          card.addEventListener('click', () => {
+          card.appendChild(controlsCol);
+
+          // Pointer-based drag reorder on card/grip
+          card.addEventListener('pointerdown', (ev) => {
+            if (state.isExtracting || ev.button !== 0) return;
+            if (ev.target.closest('button')) return;
+            pageSortDrag = {
+              fromIdx: idx,
+              toIdx: idx,
+              startY: ev.clientY,
+              moved: false,
+              pointerId: ev.pointerId,
+              cardEl: card
+            };
+          });
+
+          card.addEventListener('click', (ev) => {
+            if (ev.target.closest('button')) return;
+            if (suppressNextPageClick || (pageSortDrag && pageSortDrag.moved)) return;
             state.selectedPageId = page.id;
             state.selectedBlockId = page.blocks[0] ? page.blocks[0].id : null;
             renderPageList();
@@ -2042,6 +2301,110 @@ mokuro "/path/to/manga/volume_folder"</pre>
         });
       }
 
+      window.addEventListener('pointermove', (ev) => {
+        if (!pageSortDrag) return;
+        const dy = Math.abs(ev.clientY - pageSortDrag.startY);
+        if (!pageSortDrag.moved && dy < 6) return;
+        pageSortDrag.moved = true;
+        clearPageDropIndicators();
+        pageSortDrag.cardEl.classList.add('opacity-50');
+
+        // Auto-scroll pageListContainer near top/bottom edges
+        const listRect = el.pageListContainer.getBoundingClientRect();
+        if (ev.clientY < listRect.top + 28) {
+          el.pageListContainer.scrollTop -= 8;
+        } else if (ev.clientY > listRect.bottom - 28) {
+          el.pageListContainer.scrollTop += 8;
+        }
+
+        const cards = Array.from(el.pageListContainer.querySelectorAll('[data-page-idx]'));
+        let targetIdx = pageSortDrag.fromIdx;
+        let insertAfter = false;
+
+        for (let i = 0; i < cards.length; i++) {
+          const r = cards[i].getBoundingClientRect();
+          const midY = r.top + r.height * 0.5;
+          if (ev.clientY < midY) {
+            targetIdx = i;
+            insertAfter = false;
+            cards[i].classList.add('page-drop-above');
+            break;
+          }
+          if (i === cards.length - 1) {
+            targetIdx = i;
+            insertAfter = true;
+            cards[i].classList.add('page-drop-below');
+          }
+        }
+
+        let finalIdx = insertAfter ? targetIdx : targetIdx;
+        if (!insertAfter && targetIdx > pageSortDrag.fromIdx) {
+          finalIdx = targetIdx - 1;
+        }
+        pageSortDrag.toIdx = Math.max(0, Math.min(state.pages.length - 1, finalIdx));
+      });
+
+      window.addEventListener('pointerup', () => {
+        if (!pageSortDrag) return;
+        const drag = pageSortDrag;
+        pageSortDrag = null;
+        clearPageDropIndicators();
+        if (drag.moved) {
+          suppressNextPageClick = true;
+          setTimeout(() => { suppressNextPageClick = false; }, 80);
+          if (drag.fromIdx !== drag.toIdx) {
+            movePageOrder(drag.fromIdx, drag.toIdx);
+          }
+        }
+      });
+
+      function deleteBlockById(page, blockId) {
+        if (!page || !blockId || state.isExtracting) return;
+        const prevIdx = page.blocks.findIndex((b) => b.id === blockId);
+        if (prevIdx < 0) return;
+        page.blocks.splice(prevIdx, 1);
+        updatePageFullText(page);
+        if (state.selectedBlockId === blockId) {
+          const nextBlk = page.blocks[prevIdx] || page.blocks[prevIdx - 1] || null;
+          state.selectedBlockId = nextBlk ? nextBlk.id : null;
+        }
+        renderAll();
+      }
+
+      async function ocrSingleBlockById(page, blockId) {
+        if (!page || !blockId || state.isExtracting) return;
+        const idx = page.blocks.findIndex((b) => b.id === blockId);
+        if (idx < 0) return;
+        const blk = page.blocks[idx];
+        try {
+          state.abortRequested = false;
+          setExtractingUI(true);
+          setProgress(true, 'Recognizing bubble #' + (idx + 1) + '…', 45);
+          const im = await loadImageElement(page.url);
+          const res = await recognizeSingleBlock(im, blk);
+          blk.text = res.text;
+          blk.charConf = res.charConf;
+          page.status = 'done';
+          updatePageFullText(page);
+          setProgress(false);
+          showToast('Updated bubble #' + (idx + 1));
+        } catch (err) {
+          setProgress(false);
+          if (!err || err.message !== 'ABORTED') {
+            showToast('Bubble OCR failed: ' + (err ? err.message : ''), 'error');
+          }
+        } finally {
+          setExtractingUI(false);
+          renderAll();
+        }
+      }
+
+      function syncToolbarBoxDeleteBtn() {
+        const page = getSelectedPage();
+        const hasSel = Boolean(page && state.selectedBlockId && page.blocks.some((b) => b.id === state.selectedBlockId));
+        el.btnDeleteSelectedBox.disabled = state.isExtracting || !hasSel;
+      }
+
       function renderActivePageStage() {
         const page = getSelectedPage();
         const idx = page ? state.pages.findIndex((p) => p.id === page.id) : -1;
@@ -2049,6 +2412,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         el.btnNextPage.disabled = idx < 0 || idx >= state.pages.length - 1;
         el.btnExtractPage.disabled = state.isExtracting || !page;
         el.btnRedetectPage.disabled = state.isExtracting || !page;
+        syncToolbarBoxDeleteBtn();
 
         if (!page) {
           el.activePageTitle.textContent = 'No page selected';
@@ -2070,7 +2434,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         if (!page) return;
         if (state.fitMode) {
           el.activePageImage.style.width = '';
-          el.activePageImage.style.maxHeight = 'calc(100vh - 235px)';
+          el.activePageImage.style.maxHeight = 'calc(100vh - 255px)';
         } else {
           const targetW = Math.round(page.width * state.zoom);
           el.activePageImage.style.maxHeight = 'none';
@@ -2078,38 +2442,179 @@ mokuro "/path/to/manga/volume_folder"</pre>
         }
       }
 
+      // Interactive Box Move & 8-Way Resize State
+      let boxManip = null;
+      const RESIZE_DIRS = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+
+      function applyBoxGeometryToDom(div, blk, page) {
+        div.style.left = ((blk.x1 / page.width) * 100).toFixed(3) + '%';
+        div.style.top = ((blk.y1 / page.height) * 100).toFixed(3) + '%';
+        div.style.width = (((blk.x2 - blk.x1) / page.width) * 100).toFixed(3) + '%';
+        div.style.height = (((blk.y2 - blk.y1) / page.height) * 100).toFixed(3) + '%';
+      }
+
       function renderOverlayBoxes() {
         el.bboxOverlayLayer.innerHTML = '';
+        syncToolbarBoxDeleteBtn();
         const page = getSelectedPage();
         if (!page || !state.showBoxes || !page.width || !page.height) return;
 
         (page.blocks || []).forEach((blk, idx) => {
+          const isSelected = blk.id === state.selectedBlockId;
           const div = document.createElement('div');
-          div.className = 'bbox-rect' + (blk.id === state.selectedBlockId ? ' active' : '');
-          div.style.left = ((blk.x1 / page.width) * 100).toFixed(3) + '%';
-          div.style.top = ((blk.y1 / page.height) * 100).toFixed(3) + '%';
-          div.style.width = (((blk.x2 - blk.x1) / page.width) * 100).toFixed(3) + '%';
-          div.style.height = (((blk.y2 - blk.y1) / page.height) * 100).toFixed(3) + '%';
-          div.title = blk.text ? '#' + (idx + 1) + ': ' + blk.text : 'Bubble #' + (idx + 1) + ' (click to inspect)';
+          div.setAttribute('data-bbox-id', blk.id);
+          div.className = 'bbox-rect' + (isSelected ? ' active' : '');
+          applyBoxGeometryToDom(div, blk, page);
+          div.title = blk.text
+            ? '#' + (idx + 1) + ': ' + blk.text + ' (drag to move, handles to resize, Del to remove)'
+            : 'Bubble #' + (idx + 1) + ' (drag to move, handles to resize, Del to remove)';
 
           const badge = document.createElement('span');
           badge.className = 'bbox-badge';
           badge.textContent = String(idx + 1);
           div.appendChild(badge);
 
-          div.addEventListener('click', (ev) => {
-            if (state.drawMode) return;
+          // 8 Resize Handles
+          RESIZE_DIRS.forEach((dir) => {
+            const h = document.createElement('div');
+            h.className = 'bbox-handle bbox-handle-' + dir;
+            h.setAttribute('data-resize-dir', dir);
+            div.appendChild(h);
+          });
+
+          // Floating Quick Action Pill on Active Box (OCR + Delete)
+          if (isSelected && !state.drawMode) {
+            const qbar = document.createElement('div');
+            qbar.className = 'bbox-quickbar' + (blk.y1 < page.height * 0.06 ? ' flip-below' : '');
+
+            const qOcrBtn = document.createElement('button');
+            qOcrBtn.type = 'button';
+            qOcrBtn.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition';
+            qOcrBtn.textContent = 'OCR';
+            qOcrBtn.title = 'Re-run OCR on this box';
+            qOcrBtn.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+            qOcrBtn.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              ocrSingleBlockById(page, blk.id);
+            });
+
+            const qDelBtn = document.createElement('button');
+            qDelBtn.type = 'button';
+            qDelBtn.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-600 hover:bg-rose-500 text-white transition';
+            qDelBtn.textContent = '✕';
+            qDelBtn.title = 'Delete box (Del / Backspace)';
+            qDelBtn.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+            qDelBtn.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              deleteBlockById(page, blk.id);
+            });
+
+            qbar.appendChild(qOcrBtn);
+            qbar.appendChild(qDelBtn);
+            div.appendChild(qbar);
+          }
+
+          // Start Move or Resize on Pointer Down
+          div.addEventListener('pointerdown', (ev) => {
+            if (state.drawMode || state.isExtracting || ev.button !== 0) return;
             ev.stopPropagation();
-            state.selectedBlockId = blk.id;
+            ev.preventDefault();
+            el.viewerViewport.focus({ preventScroll: true });
+
+            const handleEl = ev.target.closest('[data-resize-dir]');
+            const resizeDir = handleEl ? handleEl.getAttribute('data-resize-dir') : null;
+
+            if (state.selectedBlockId !== blk.id) {
+              state.selectedBlockId = blk.id;
+              syncToolbarBoxDeleteBtn();
+            }
+
+            const stageRect = el.stageImageWrapper.getBoundingClientRect();
+            div.setPointerCapture(ev.pointerId);
+            div.classList.add('dragging');
+
+            boxManip = {
+              pointerId: ev.pointerId,
+              divEl: div,
+              page,
+              blk,
+              mode: resizeDir ? 'resize' : 'move',
+              dir: resizeDir,
+              startClientX: ev.clientX,
+              startClientY: ev.clientY,
+              stageW: Math.max(1, stageRect.width),
+              stageH: Math.max(1, stageRect.height),
+              origX1: blk.x1,
+              origY1: blk.y1,
+              origX2: blk.x2,
+              origY2: blk.y2,
+              moved: false
+            };
+          });
+
+          div.addEventListener('pointermove', (ev) => {
+            if (!boxManip || boxManip.pointerId !== ev.pointerId) return;
+            const dxClient = ev.clientX - boxManip.startClientX;
+            const dyClient = ev.clientY - boxManip.startClientY;
+            if (!boxManip.moved && Math.hypot(dxClient, dyClient) < 3) return;
+            boxManip.moved = true;
+
+            const dxImg = (dxClient / boxManip.stageW) * boxManip.page.width;
+            const dyImg = (dyClient / boxManip.stageH) * boxManip.page.height;
+            const minSize = 12;
+            const W = boxManip.page.width;
+            const H = boxManip.page.height;
+
+            if (boxManip.mode === 'move') {
+              const bw = boxManip.origX2 - boxManip.origX1;
+              const bh = boxManip.origY2 - boxManip.origY1;
+              const nx1 = Math.max(0, Math.min(W - bw, Math.round(boxManip.origX1 + dxImg)));
+              const ny1 = Math.max(0, Math.min(H - bh, Math.round(boxManip.origY1 + dyImg)));
+              boxManip.blk.x1 = nx1;
+              boxManip.blk.y1 = ny1;
+              boxManip.blk.x2 = nx1 + bw;
+              boxManip.blk.y2 = ny1 + bh;
+            } else {
+              let x1 = boxManip.origX1;
+              let y1 = boxManip.origY1;
+              let x2 = boxManip.origX2;
+              let y2 = boxManip.origY2;
+              const d = boxManip.dir;
+              if (d.includes('w')) x1 = Math.max(0, Math.min(x2 - minSize, Math.round(boxManip.origX1 + dxImg)));
+              if (d.includes('e')) x2 = Math.min(W, Math.max(x1 + minSize, Math.round(boxManip.origX2 + dxImg)));
+              if (d.includes('n')) y1 = Math.max(0, Math.min(y2 - minSize, Math.round(boxManip.origY1 + dyImg)));
+              if (d.includes('s')) y2 = Math.min(H, Math.max(y1 + minSize, Math.round(boxManip.origY2 + dyImg)));
+              boxManip.blk.x1 = x1;
+              boxManip.blk.y1 = y1;
+              boxManip.blk.x2 = x2;
+              boxManip.blk.y2 = y2;
+            }
+
+            applyBoxGeometryToDom(boxManip.divEl, boxManip.blk, boxManip.page);
+          });
+
+          const finishBoxManip = (ev) => {
+            if (!boxManip || boxManip.pointerId !== ev.pointerId) return;
+            const wasMoved = boxManip.moved;
+            boxManip.divEl.classList.remove('dragging');
+            boxManip = null;
+
             renderOverlayBoxes();
-            if (state.activeTab !== 'bubbles') {
-              setActiveTab('bubbles');
+            if (!wasMoved) {
+              if (state.activeTab !== 'bubbles') {
+                setActiveTab('bubbles');
+              } else {
+                renderRightPanel();
+              }
+              const cardEl = el.panelPageBubbles.querySelector('[data-block-card="' + blk.id + '"]');
+              if (cardEl) cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             } else {
               renderRightPanel();
             }
-            const cardEl = el.panelPageBubbles.querySelector('[data-block-card="' + blk.id + '"]');
-            if (cardEl) cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-          });
+          };
+
+          div.addEventListener('pointerup', finishBoxManip);
+          div.addEventListener('pointercancel', finishBoxManip);
 
           el.bboxOverlayLayer.appendChild(div);
         });
@@ -2332,7 +2837,15 @@ mokuro "/path/to/manga/volume_folder"</pre>
       }
 
       el.stageImageWrapper.addEventListener('pointerdown', (ev) => {
-        if (!state.drawMode || state.isExtracting) return;
+        if (!state.drawMode) {
+          if (state.selectedBlockId && !ev.target.closest('[data-bbox-id]')) {
+            state.selectedBlockId = null;
+            renderOverlayBoxes();
+            renderRightPanel();
+          }
+          return;
+        }
+        if (state.isExtracting) return;
         const page = getSelectedPage();
         if (!page) return;
         ev.preventDefault();
@@ -2437,9 +2950,16 @@ mokuro "/path/to/manga/volume_folder"</pre>
       // -----------------------------------------------------------------------
       el.btnUploadFolder.addEventListener('click', () => el.folderInput.click());
       el.btnEmptyUploadFolder.addEventListener('click', () => el.folderInput.click());
+      el.btnDropzoneFolder.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        el.folderInput.click();
+      });
       el.btnUploadFiles.addEventListener('click', () => el.filesInput.click());
       el.btnEmptyUploadFiles.addEventListener('click', () => el.filesInput.click());
-      el.sidebarDropTarget.addEventListener('click', () => el.filesInput.click());
+      el.sidebarDropTarget.addEventListener('click', (ev) => {
+        if (ev.target.closest('button')) return;
+        el.filesInput.click();
+      });
 
       el.folderInput.addEventListener('change', async (e) => {
         if (e.target.files && e.target.files.length > 0) {
@@ -2468,28 +2988,154 @@ mokuro "/path/to/manga/volume_folder"</pre>
         renderAll();
       });
 
-      // Drag and drop across entire workspace
-      let dragDepth = 0;
-      window.addEventListener('dragenter', (ev) => {
-        ev.preventDefault();
-        dragDepth++;
-        el.dragOverlay.classList.remove('hidden');
-      });
+      // Prevent accidental browser tab navigation when dropping outside the designated drop area
       window.addEventListener('dragover', (ev) => {
-        ev.preventDefault();
+        if (!el.sidebarDropTarget.contains(ev.target)) {
+          ev.preventDefault();
+          if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'none';
+        }
       });
-      window.addEventListener('dragleave', (ev) => {
-        ev.preventDefault();
-        dragDepth = Math.max(0, dragDepth - 1);
-        if (dragDepth === 0) el.dragOverlay.classList.add('hidden');
+      window.addEventListener('drop', (ev) => {
+        if (!el.sidebarDropTarget.contains(ev.target)) {
+          ev.preventDefault();
+        }
       });
-      window.addEventListener('drop', async (ev) => {
+
+      // Scoped Drag-and-Drop ONLY on Left Sidebar "Drop Folder or Images" Designated Area
+      el.sidebarDropTarget.addEventListener('dragenter', (ev) => {
         ev.preventDefault();
-        dragDepth = 0;
-        el.dragOverlay.classList.add('hidden');
+        ev.stopPropagation();
+        if (state.isExtracting) return;
+        if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+        el.sidebarDropTarget.classList.add('dropzone-active');
+      });
+
+      el.sidebarDropTarget.addEventListener('dragover', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (state.isExtracting) return;
+        if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+        el.sidebarDropTarget.classList.add('dropzone-active');
+      });
+
+      el.sidebarDropTarget.addEventListener('dragleave', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!el.sidebarDropTarget.contains(ev.relatedTarget)) {
+          el.sidebarDropTarget.classList.remove('dropzone-active');
+        }
+      });
+
+      el.sidebarDropTarget.addEventListener('drop', async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        el.sidebarDropTarget.classList.remove('dropzone-active');
         if (state.isExtracting || !ev.dataTransfer) return;
-        const files = await collectDroppedFiles(ev.dataTransfer);
+
+        // Capture synchronous snapshot immediately before any await
+        const snap = snapshotDataTransferSync(ev.dataTransfer);
+        const { files, sawDirectory } = await resolveDroppedSnapshot(snap);
+        if (files.length === 0 && sawDirectory) {
+          showToast('Browser sandbox restricted reading inside the dropped folder — click "Browse Folder" to load it.', 'warn');
+          return;
+        }
         await ingestFileList(files);
+      });
+
+      // Toolbar Delete Box Button & Keyboard Manipulation (Move, Resize, Delete, Cycle)
+      el.btnDeleteSelectedBox.addEventListener('click', () => {
+        const page = getSelectedPage();
+        if (page && state.selectedBlockId) {
+          deleteBlockById(page, state.selectedBlockId);
+        }
+      });
+
+      window.addEventListener('keydown', (ev) => {
+        const activeTag = document.activeElement ? document.activeElement.tagName : '';
+        const isTyping = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT' ||
+          (document.activeElement && document.activeElement.isContentEditable);
+
+        if (ev.key === 'Escape') {
+          if (!el.stackModal.classList.contains('hidden')) {
+            el.stackModal.classList.add('hidden');
+            return;
+          }
+          if (state.drawMode) {
+            setDrawMode(false);
+            return;
+          }
+          if (!isTyping && state.selectedBlockId) {
+            state.selectedBlockId = null;
+            renderOverlayBoxes();
+            renderRightPanel();
+            return;
+          }
+        }
+
+        if (isTyping || state.isExtracting || !el.stackModal.classList.contains('hidden')) return;
+
+        const page = getSelectedPage();
+        if (!page || !page.blocks || page.blocks.length === 0) return;
+
+        // Cycle boxes with Tab / Shift+Tab when a box is selected
+        if (ev.key === 'Tab' && state.selectedBlockId) {
+          ev.preventDefault();
+          const curIdx = page.blocks.findIndex((b) => b.id === state.selectedBlockId);
+          const nextIdx = ev.shiftKey
+            ? (curIdx <= 0 ? page.blocks.length - 1 : curIdx - 1)
+            : (curIdx + 1) % page.blocks.length;
+          state.selectedBlockId = page.blocks[nextIdx].id;
+          renderOverlayBoxes();
+          renderRightPanel();
+          return;
+        }
+
+        if (!state.selectedBlockId) return;
+        const blk = page.blocks.find((b) => b.id === state.selectedBlockId);
+        if (!blk) return;
+
+        if (ev.key === 'Delete' || ev.key === 'Backspace') {
+          ev.preventDefault();
+          deleteBlockById(page, blk.id);
+          showToast('Deleted detector box');
+          return;
+        }
+
+        if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight' || ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
+          ev.preventDefault();
+          const step = ev.shiftKey ? 16 : 4;
+          const minSize = 12;
+          const W = page.width;
+          const H = page.height;
+
+          if (ev.ctrlKey || ev.metaKey || ev.altKey) {
+            // Alt + Arrow resizes width / height
+            if (ev.key === 'ArrowRight') blk.x2 = Math.min(W, blk.x2 + step);
+            if (ev.key === 'ArrowLeft') blk.x2 = Math.max(blk.x1 + minSize, blk.x2 - step);
+            if (ev.key === 'ArrowDown') blk.y2 = Math.min(H, blk.y2 + step);
+            if (ev.key === 'ArrowUp') blk.y2 = Math.max(blk.y1 + minSize, blk.y2 - step);
+          } else {
+            // Arrow moves box
+            const bw = blk.x2 - blk.x1;
+            const bh = blk.y2 - blk.y1;
+            if (ev.key === 'ArrowLeft') {
+              blk.x1 = Math.max(0, blk.x1 - step);
+              blk.x2 = blk.x1 + bw;
+            } else if (ev.key === 'ArrowRight') {
+              blk.x1 = Math.min(W - bw, blk.x1 + step);
+              blk.x2 = blk.x1 + bw;
+            } else if (ev.key === 'ArrowUp') {
+              blk.y1 = Math.max(0, blk.y1 - step);
+              blk.y2 = blk.y1 + bh;
+            } else if (ev.key === 'ArrowDown') {
+              blk.y1 = Math.min(H - bh, blk.y1 + step);
+              blk.y2 = blk.y1 + bh;
+            }
+          }
+
+          renderOverlayBoxes();
+          renderRightPanel();
+        }
       });
 
       // Dropdown Controls
