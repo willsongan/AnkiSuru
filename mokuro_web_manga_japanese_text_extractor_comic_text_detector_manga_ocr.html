@@ -1,0 +1,2669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mokuro Web — Manga Japanese Text Extractor (comic-text-detector + manga-ocr)</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/ort.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+    }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #f8fafc;
+      color: #0f172a;
+      overflow-x: hidden;
+    }
+    .jp-text {
+      font-family: 'Noto Sans JP', sans-serif;
+    }
+    .checker-bg {
+      background-color: #eef2f6;
+      background-image:
+        linear-gradient(45deg, #e2e8f0 25%, transparent 25%),
+        linear-gradient(-45deg, #e2e8f0 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #e2e8f0 75%),
+        linear-gradient(-45deg, transparent 75%, #e2e8f0 75%);
+      background-size: 20px 20px;
+      background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+    }
+    .bbox-rect {
+      position: absolute;
+      border: 2px solid rgba(79, 70, 229, 0.85);
+      background-color: rgba(79, 70, 229, 0.08);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .bbox-rect:hover {
+      background-color: rgba(79, 70, 229, 0.18);
+      border-color: #4338ca;
+    }
+    .bbox-rect.active {
+      border-color: #e11d48;
+      background-color: rgba(225, 29, 72, 0.14);
+      box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.25);
+      z-index: 20;
+    }
+    .bbox-badge {
+      position: absolute;
+      top: -11px;
+      right: -11px;
+      min-width: 22px;
+      height: 22px;
+      padding: 0 5px;
+      border-radius: 9999px;
+      background: #4f46e5;
+      color: #ffffff;
+      font-size: 11px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 4px rgba(15, 23, 42, 0.25);
+      pointer-events: none;
+    }
+    .bbox-rect.active .bbox-badge {
+      background: #e11d48;
+    }
+    .custom-scroll::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 9999px;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col bg-slate-50 text-slate-900">
+
+  <!-- Hidden File Inputs -->
+  <input id="folderInput" type="file" webkitdirectory directory multiple accept="image/*" class="hidden" />
+  <input id="filesInput" type="file" multiple accept="image/*" class="hidden" />
+
+  <!-- Top Header -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30">
+    <div class="max-w-[1600px] mx-auto px-3 sm:px-5 py-2.5 flex flex-wrap items-center justify-between gap-2.5">
+      <div class="flex items-center gap-2.5 min-w-0">
+        <div class="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-black text-base shadow-sm shrink-0 jp-text">
+          漫
+        </div>
+        <div class="min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <h1 class="text-base sm:text-lg font-bold tracking-tight text-slate-900 truncate">Mokuro Web Extractor</h1>
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+              manga-ocr + comic-text-detector
+            </span>
+          </div>
+          <p class="text-xs text-slate-500 hidden sm:block truncate">
+            100% in-browser Japanese manga OCR powered by open-source GitHub models (no server uploads)
+          </p>
+        </div>
+      </div>
+
+      <div class="flex items-center flex-wrap gap-2">
+        <button id="btnUploadFolder" type="button" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs sm:text-sm font-medium bg-slate-900 text-white hover:bg-slate-800 transition shadow-sm">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
+          <span>Upload Folder</span>
+        </button>
+
+        <button id="btnUploadFiles" type="button" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs sm:text-sm font-medium bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 transition shadow-sm">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+          <span>Upload Pictures</span>
+        </button>
+
+        <button id="btnLoadSamples" type="button" class="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs sm:text-sm font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 transition" title="Load 2 built-in Japanese manga sample pages">
+          <span>Sample Pages</span>
+        </button>
+
+        <button id="btnOpenStackModal" type="button" class="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs sm:text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z"/></svg>
+          <span class="hidden md:inline">GitHub Stack &amp; CLI</span>
+          <span class="md:hidden">Stack</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Pipeline Controls & Primary Extract Bar -->
+    <div class="bg-slate-50/90 border-t border-slate-200 px-3 sm:px-5 py-2">
+      <div class="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-2.5">
+        <div class="flex flex-wrap items-center gap-2 sm:gap-3 text-xs">
+          <label class="flex items-center gap-1.5 text-slate-600 font-medium">
+            <span class="whitespace-nowrap">Detector:</span>
+            <select id="selectDetector" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="ctd-onnx">comic-text-detector ONNX (Neural · ~95 MB)</option>
+              <option value="bubble-heuristic" selected>Fast Manga Bubble Detector (Instant · 0 MB)</option>
+              <option value="whole-image">Whole Image (Pre-cropped Bubble/Panel)</option>
+            </select>
+          </label>
+
+          <label class="flex items-center gap-1.5 text-slate-600 font-medium">
+            <span class="whitespace-nowrap">OCR Engine:</span>
+            <select id="selectOcrEngine" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="manga-ocr" selected>kha-white/manga-ocr ONNX (Best · ~117 MB)</option>
+              <option value="tesseract-jpn">Tesseract.js v5 jpn_vert (Fast Download · ~15 MB)</option>
+            </select>
+          </label>
+
+          <label class="flex items-center gap-1.5 text-slate-600 font-medium">
+            <span class="whitespace-nowrap">Order:</span>
+            <select id="selectReadingOrder" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="rtl" selected>Manga Right → Left</option>
+              <option value="ttb">Webtoon Top → Bottom</option>
+              <option value="ltr">Comic Left → Right</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="flex items-center gap-2 ml-auto">
+          <button id="btnExtractPage" type="button" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-white text-indigo-700 border border-indigo-300 hover:bg-indigo-50 transition">
+            <span>Extract Current Page</span>
+          </button>
+
+          <button id="btnExtractAll" type="button" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition shadow-sm">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            <span id="extractAllLabel">Extract All Japanese Text</span>
+          </button>
+
+          <button id="btnStopExtract" type="button" class="hidden items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-rose-600 text-white hover:bg-rose-700 transition shadow-sm">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 6h12v12H6z"/></svg>
+            <span>Stop</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Progress Strip -->
+      <div id="progressContainer" class="hidden max-w-[1600px] mx-auto mt-2 pt-2 border-t border-slate-200/80">
+        <div class="flex items-center justify-between text-xs mb-1 gap-2">
+          <span id="progressStatusText" class="font-medium text-indigo-700 truncate">Initializing OCR model…</span>
+          <span id="progressPercentText" class="font-semibold text-slate-600 shrink-0">0%</span>
+        </div>
+        <div class="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+          <div id="progressBarFill" class="h-full bg-indigo-600 transition-all duration-200 rounded-full" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <main id="dropZoneRoot" class="flex-1 max-w-[1600px] w-full mx-auto p-3 sm:p-4 grid grid-cols-1 lg:grid-cols-12 gap-4 relative">
+
+    <!-- Drag Overlay -->
+    <div id="dragOverlay" class="hidden fixed inset-0 z-40 bg-indigo-950/50 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-none">
+      <div class="bg-white rounded-2xl border-2 border-dashed border-indigo-500 p-8 max-w-md text-center shadow-2xl">
+        <div class="w-12 h-12 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center mx-auto mb-3">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+        </div>
+        <p class="text-base font-bold text-slate-900">Drop Manga Folder or Page Pictures</p>
+        <p class="text-xs text-slate-500 mt-1">Supports JPG, PNG, WEBP, AVIF, BMP sorted automatically by page number</p>
+      </div>
+    </div>
+
+    <!-- Left Column: Pages Queue & Dropzone -->
+    <section class="lg:col-span-3 xl:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden max-h-[340px] lg:max-h-[calc(100vh-148px)]">
+      <div class="p-3 border-b border-slate-200 flex items-center justify-between gap-2">
+        <div>
+          <h2 class="text-xs font-bold uppercase tracking-wider text-slate-500">Manga Pages</h2>
+          <p id="pagesSummaryCount" class="text-xs font-semibold text-slate-800 mt-0.5">0 pages loaded</p>
+        </div>
+        <button id="btnClearPages" type="button" class="text-xs font-medium text-slate-500 hover:text-rose-600 px-2 py-1 rounded hover:bg-rose-50 transition">
+          Clear
+        </button>
+      </div>
+
+      <!-- Mini Drop Target -->
+      <div id="sidebarDropTarget" class="mx-2.5 mt-2.5 p-2.5 rounded-lg border border-dashed border-slate-300 bg-slate-50 hover:border-indigo-400 hover:bg-indigo-50/40 transition text-center cursor-pointer">
+        <p class="text-xs font-semibold text-slate-700">+ Drop Folder or Images</p>
+        <p class="text-[11px] text-slate-500">or click to browse pictures</p>
+      </div>
+
+      <div id="sampleNoticeBanner" class="hidden mx-2.5 mt-2 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-800">
+        Sample pages loaded for testing. Upload a folder or pictures anytime to replace them.
+      </div>
+
+      <!-- Page Thumbnails List -->
+      <div id="pageListContainer" class="flex-1 overflow-y-auto custom-scroll p-2.5 space-y-2"></div>
+    </section>
+
+    <!-- Center Column: Interactive Manga Page Viewer & Box Editor -->
+    <section class="lg:col-span-5 xl:col-span-6 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-[420px] lg:max-h-[calc(100vh-148px)]">
+      <!-- Viewer Toolbar -->
+      <div class="px-3 py-2 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 bg-slate-50/60">
+        <div class="flex items-center gap-1.5 min-w-0">
+          <button id="btnPrevPage" type="button" class="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40" title="Previous page">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+          </button>
+          <span id="activePageTitle" class="text-xs font-semibold text-slate-800 truncate max-w-[160px] sm:max-w-[240px]">No page selected</span>
+          <button id="btnNextPage" type="button" class="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40" title="Next page">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+          </button>
+        </div>
+
+        <div class="flex items-center flex-wrap gap-1.5">
+          <button id="btnToggleBoxes" type="button" class="px-2.5 py-1 rounded-lg text-xs font-medium border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition">
+            Boxes: On
+          </button>
+          <button id="btnDrawBoxMode" type="button" class="px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 transition" title="Drag on the manga page to manually add a speech bubble box">
+            + Draw Box
+          </button>
+          <button id="btnRedetectPage" type="button" class="px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 transition" title="Run text region detection on this page">
+            Detect Boxes
+          </button>
+          <div class="inline-flex items-center rounded-lg border border-slate-300 bg-white overflow-hidden">
+            <button id="btnZoomOut" type="button" class="px-2 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100" title="Zoom out">−</button>
+            <button id="btnZoomFit" type="button" class="px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100 border-x border-slate-200">Fit</button>
+            <button id="btnZoomIn" type="button" class="px-2 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100" title="Zoom in">+</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Draw Mode Helper Banner -->
+      <div id="drawModeBanner" class="hidden px-3 py-1.5 bg-rose-50 border-b border-rose-200 text-xs text-rose-800 flex items-center justify-between">
+        <span><strong>Draw Bubble Mode:</strong> Click and drag over any speech bubble or vertical line on the page to add &amp; OCR it.</span>
+        <button id="btnExitDrawMode" type="button" class="font-semibold underline ml-2">Done</button>
+      </div>
+
+      <!-- Canvas Stage -->
+      <div id="viewerViewport" class="flex-1 overflow-auto custom-scroll checker-bg flex items-start justify-center p-4 relative select-none">
+        <!-- Empty State -->
+        <div id="emptyViewerState" class="hidden my-auto bg-white/95 rounded-2xl border border-slate-200 p-6 sm:p-8 max-w-md text-center shadow-sm">
+          <div class="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto mb-3 font-bold text-xl jp-text">あ</div>
+          <h3 class="text-base font-bold text-slate-900">Upload Manga Pages to Extract Japanese Text</h3>
+          <p class="text-xs text-slate-600 mt-1.5 leading-relaxed">
+            Select an entire manga chapter folder or multiple page images, then press <strong>Extract All Japanese Text</strong>. Everything runs privately in your browser.
+          </p>
+          <div class="mt-4 flex flex-wrap items-center justify-center gap-2">
+            <button id="btnEmptyUploadFolder" type="button" class="px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800">Upload Folder</button>
+            <button id="btnEmptyUploadFiles" type="button" class="px-3.5 py-2 rounded-lg text-xs font-semibold bg-white border border-slate-300 text-slate-700 hover:bg-slate-50">Upload Pictures</button>
+            <button id="btnEmptyLoadSamples" type="button" class="px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-50 text-indigo-700 hover:bg-indigo-100">Load Sample Manga</button>
+          </div>
+        </div>
+
+        <!-- Image + Interactive Overlay Wrapper -->
+        <div id="stageImageWrapper" class="relative inline-block shadow-md rounded bg-white overflow-hidden">
+          <img id="activePageImage" alt="Selected manga page" class="block max-w-full h-auto select-none pointer-events-none" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" />
+          <div id="bboxOverlayLayer" class="absolute inset-0"></div>
+          <div id="rubberBandBox" class="hidden absolute border-2 border-rose-600 bg-rose-500/15 pointer-events-none rounded"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Column: Extracted Japanese Text Panel -->
+    <section class="lg:col-span-4 xl:col-span-4 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-[420px] lg:max-h-[calc(100vh-148px)]">
+      <!-- Transcript Tabs -->
+      <div class="p-2.5 border-b border-slate-200 bg-slate-50/70 flex flex-wrap items-center justify-between gap-2">
+        <div class="inline-flex rounded-lg bg-slate-200/80 p-0.5 text-xs font-semibold">
+          <button id="tabBtnAllText" type="button" class="px-2.5 py-1.5 rounded-md bg-white text-slate-900 shadow-sm transition">
+            Full Manga Text
+          </button>
+          <button id="tabBtnPageBubbles" type="button" class="px-2.5 py-1.5 rounded-md text-slate-600 hover:text-slate-900 transition">
+            Page Bubbles (<span id="currentBubbleCountBadge">0</span>)
+          </button>
+        </div>
+
+        <div class="flex items-center gap-1.5">
+          <button id="btnCopyAllText" type="button" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition shadow-sm">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+            <span>Copy All</span>
+          </button>
+          <button id="btnDownloadTxt" type="button" class="px-2.5 py-1.5 rounded-lg text-xs font-medium border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 transition" title="Download extracted Japanese text as UTF-8 .txt">
+            .TXT
+          </button>
+          <button id="btnDownloadJson" type="button" class="px-2.5 py-1.5 rounded-lg text-xs font-medium border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 transition" title="Download Mokuro-style coordinates + Japanese OCR JSON">
+            .JSON
+          </button>
+        </div>
+      </div>
+
+      <!-- Formatting Sub-bar -->
+      <div class="px-3 py-1.5 border-b border-slate-100 flex items-center justify-between gap-2 text-xs bg-white">
+        <label class="inline-flex items-center gap-1.5 text-slate-600 cursor-pointer">
+          <input id="chkIncludeHeaders" type="checkbox" checked class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+          <span>Include page headers</span>
+        </label>
+        <div class="flex items-center gap-1.5 text-slate-500">
+          <span id="totalCharsStat" class="font-medium text-slate-600">0 chars</span>
+          <span class="text-slate-300">|</span>
+          <button id="btnFontSmaller" type="button" class="px-1.5 py-0.5 rounded hover:bg-slate-100 font-semibold text-slate-700" title="Smaller Japanese font">A−</button>
+          <button id="btnFontLarger" type="button" class="px-1.5 py-0.5 rounded hover:bg-slate-100 font-semibold text-slate-700" title="Larger Japanese font">A+</button>
+        </div>
+      </div>
+
+      <!-- View 1: Full Manga Japanese Script -->
+      <div id="panelAllText" class="flex-1 flex flex-col overflow-hidden p-3">
+        <textarea id="fullMangaTextarea" readonly placeholder="Press &quot;Extract All Japanese Text&quot; above to detect speech bubbles and transcribe all Japanese dialogue across your uploaded manga pages…" class="jp-text flex-1 w-full resize-none rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 text-base leading-relaxed text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 custom-scroll"></textarea>
+      </div>
+
+      <!-- View 2: Current Page Bubbles Inspector -->
+      <div id="panelPageBubbles" class="hidden flex-1 overflow-y-auto custom-scroll p-3 space-y-2.5"></div>
+    </section>
+  </main>
+
+  <!-- Architecture & Local CLI Modal -->
+  <div id="stackModal" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl border border-slate-200 max-w-2xl w-full max-h-[88vh] flex flex-col shadow-2xl overflow-hidden">
+      <div class="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-bold text-slate-900">Open-Source GitHub Selection: Mokuro + Manga OCR</h2>
+          <p class="text-xs text-slate-500 mt-0.5">Why this pipeline is the gold standard for Japanese manga text extraction</p>
+        </div>
+        <button id="btnCloseStackModal" type="button" class="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="p-5 overflow-y-auto custom-scroll space-y-4 text-xs sm:text-sm text-slate-700 leading-relaxed">
+        <div class="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-200">
+          <p class="font-semibold text-indigo-950">Selected Winner: <a href="https://github.com/kha-white/mokuro" target="_blank" rel="noopener noreferrer" class="underline hover:text-indigo-700">kha-white/mokuro</a> (<a href="https://github.com/dmMaze/comic-text-detector" target="_blank" rel="noopener noreferrer" class="underline hover:text-indigo-700">comic-text-detector</a> + <a href="https://github.com/kha-white/manga-ocr" target="_blank" rel="noopener noreferrer" class="underline hover:text-indigo-700">manga-ocr</a>)</p>
+          <p class="mt-1 text-xs text-indigo-900">
+            Unlike standard OCR engines that fail on vertical Japanese typesetting, furigana ruby glosses, and stylized speech-bubble fonts, <strong>manga-ocr</strong> (2.8k stars, Apache-2.0) uses a Vision Encoder-Decoder (DeiT ViT + Japanese char-BERT trained on Manga109-s) that reads entire multi-line speech bubbles in a single pass. Paired with <strong>comic-text-detector</strong> (391 stars, GPL-3.0) as orchestrated by <strong>mokuro</strong> (1.8k stars, GPL-3.0), it extracts full pages in right-to-left manga reading order.
+          </p>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr class="border-b border-slate-200 text-slate-500 uppercase">
+                <th class="py-2 pr-3">GitHub Project</th>
+                <th class="py-2 px-3">Stars / License</th>
+                <th class="py-2 pl-3">Fit for Manga Text Extraction</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr>
+                <td class="py-2 pr-3 font-semibold"><a href="https://github.com/kha-white/mokuro" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">kha-white/mokuro</a> + <a href="https://github.com/kha-white/manga-ocr" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">manga-ocr</a></td>
+                <td class="py-2 px-3 whitespace-nowrap">1.8k &amp; 2.8k ★ · GPL-3.0 / Apache-2.0</td>
+                <td class="py-2 pl-3"><strong>Chosen architecture.</strong> Highest Japanese bubble accuracy (vertical/horizontal + furigana) and runs directly in-browser via quantized ONNX (~117 MB).</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-3 font-semibold"><a href="https://github.com/zyddnys/manga-image-translator" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">zyddnys/manga-image-translator</a></td>
+                <td class="py-2 px-3 whitespace-nowrap">10.3k ★ · GPL-3.0</td>
+                <td class="py-2 pl-3">Heavy (~15 GB Docker) end-to-end LaMa image inpainting &amp; typesetting suite; overkill when you just want clean Japanese text extraction.</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-3 font-semibold"><a href="https://github.com/dmMaze/BallonsTranslator" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">dmMaze/BallonsTranslator</a></td>
+                <td class="py-2 px-3 whitespace-nowrap">5.0k ★ · GPL-3.0</td>
+                <td class="py-2 pl-3">Desktop Qt translation/lettering editor (uses <code>manga-ocr</code> + <code>comic-text-detector</code> under the hood, not a lightweight web extractor).</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-3 font-semibold"><a href="https://github.com/naptha/tesseract.js/" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">naptha/tesseract.js</a></td>
+                <td class="py-2 px-3 whitespace-nowrap">WASM v5.1.1 · Apache-2.0</td>
+                <td class="py-2 pl-3">Included in the dropdown (~15 MB) as a fast-download fallback, though less accurate on stylized manga fonts and furigana.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-slate-900 text-slate-100 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-slate-300">Optional: Offline Local GPU Batch CLI (for 1,000+ page volumes)</span>
+            <button id="btnCopyCliCmd" type="button" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] font-medium text-indigo-300">Copy CLI</button>
+          </div>
+          <pre id="cliCommandBlock" class="text-xs font-mono text-emerald-300 overflow-x-auto">pip3 install mokuro manga-ocr
+mokuro "/path/to/manga/volume_folder"</pre>
+        </div>
+      </div>
+
+      <div class="px-5 py-3 bg-slate-50 border-t border-slate-200 flex justify-end">
+        <button id="btnCloseStackModalBottom" type="button" class="px-4 py-2 rounded-lg text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toastContainer" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      // Configure ONNX Runtime Web for sandboxed iframe safety (no cross-origin SharedArrayBuffer worker needed)
+      if (window.ort && window.ort.env && window.ort.env.wasm) {
+        window.ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/';
+        window.ort.env.wasm.numThreads = 1;
+        window.ort.env.wasm.proxy = false;
+      }
+
+      // Verified Hugging Face ONNX & Vocab URLs
+      const MODEL_URLS = {
+        mocrEncoder: 'https://huggingface.co/kimchireader/manga-ocr-onnx-q8/resolve/main/onnx/encoder_model_quantized.onnx',
+        mocrDecoder: 'https://huggingface.co/kimchireader/manga-ocr-onnx-q8/resolve/main/onnx/decoder_model_merged_quantized.onnx',
+        mocrVocab: 'https://huggingface.co/kha-white/manga-ocr-base/resolve/main/vocab.txt',
+        ctdOnnx: 'https://huggingface.co/HighLiuk/japanese-onnx-models/resolve/main/comictextdetector.onnx'
+      };
+
+      const IMAGE_EXT_RE = /\.(jpe?g|png|webp|avif|bmp|gif)$/i;
+      const naturalCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+      // Application State
+      const state = {
+        pages: [],
+        selectedPageId: null,
+        selectedBlockId: null,
+        isSampleSet: false,
+        detectorMode: 'bubble-heuristic',
+        ocrEngine: 'manga-ocr',
+        readingOrder: 'rtl',
+        showBoxes: true,
+        drawMode: false,
+        zoom: 1.0,
+        fitMode: true,
+        activeTab: 'all', // 'all' | 'bubbles'
+        includeHeaders: true,
+        jpFontSize: 16,
+        isExtracting: false,
+        abortRequested: false
+      };
+
+      // Cached ML Runtimes
+      const runtime = {
+        mocrEncoderSession: null,
+        mocrDecoderSession: null,
+        mocrVocab: null,
+        ctdSession: null,
+        tesseractWorker: null
+      };
+
+      // DOM Elements
+      const el = {
+        folderInput: document.getElementById('folderInput'),
+        filesInput: document.getElementById('filesInput'),
+        btnUploadFolder: document.getElementById('btnUploadFolder'),
+        btnUploadFiles: document.getElementById('btnUploadFiles'),
+        btnLoadSamples: document.getElementById('btnLoadSamples'),
+        btnOpenStackModal: document.getElementById('btnOpenStackModal'),
+        btnCloseStackModal: document.getElementById('btnCloseStackModal'),
+        btnCloseStackModalBottom: document.getElementById('btnCloseStackModalBottom'),
+        stackModal: document.getElementById('stackModal'),
+        btnCopyCliCmd: document.getElementById('btnCopyCliCmd'),
+        cliCommandBlock: document.getElementById('cliCommandBlock'),
+        selectDetector: document.getElementById('selectDetector'),
+        selectOcrEngine: document.getElementById('selectOcrEngine'),
+        selectReadingOrder: document.getElementById('selectReadingOrder'),
+        btnExtractPage: document.getElementById('btnExtractPage'),
+        btnExtractAll: document.getElementById('btnExtractAll'),
+        extractAllLabel: document.getElementById('extractAllLabel'),
+        btnStopExtract: document.getElementById('btnStopExtract'),
+        progressContainer: document.getElementById('progressContainer'),
+        progressStatusText: document.getElementById('progressStatusText'),
+        progressPercentText: document.getElementById('progressPercentText'),
+        progressBarFill: document.getElementById('progressBarFill'),
+        dropZoneRoot: document.getElementById('dropZoneRoot'),
+        dragOverlay: document.getElementById('dragOverlay'),
+        pagesSummaryCount: document.getElementById('pagesSummaryCount'),
+        btnClearPages: document.getElementById('btnClearPages'),
+        sidebarDropTarget: document.getElementById('sidebarDropTarget'),
+        sampleNoticeBanner: document.getElementById('sampleNoticeBanner'),
+        pageListContainer: document.getElementById('pageListContainer'),
+        btnPrevPage: document.getElementById('btnPrevPage'),
+        btnNextPage: document.getElementById('btnNextPage'),
+        activePageTitle: document.getElementById('activePageTitle'),
+        btnToggleBoxes: document.getElementById('btnToggleBoxes'),
+        btnDrawBoxMode: document.getElementById('btnDrawBoxMode'),
+        btnRedetectPage: document.getElementById('btnRedetectPage'),
+        btnZoomOut: document.getElementById('btnZoomOut'),
+        btnZoomFit: document.getElementById('btnZoomFit'),
+        btnZoomIn: document.getElementById('btnZoomIn'),
+        drawModeBanner: document.getElementById('drawModeBanner'),
+        btnExitDrawMode: document.getElementById('btnExitDrawMode'),
+        viewerViewport: document.getElementById('viewerViewport'),
+        emptyViewerState: document.getElementById('emptyViewerState'),
+        btnEmptyUploadFolder: document.getElementById('btnEmptyUploadFolder'),
+        btnEmptyUploadFiles: document.getElementById('btnEmptyUploadFiles'),
+        btnEmptyLoadSamples: document.getElementById('btnEmptyLoadSamples'),
+        stageImageWrapper: document.getElementById('stageImageWrapper'),
+        activePageImage: document.getElementById('activePageImage'),
+        bboxOverlayLayer: document.getElementById('bboxOverlayLayer'),
+        rubberBandBox: document.getElementById('rubberBandBox'),
+        tabBtnAllText: document.getElementById('tabBtnAllText'),
+        tabBtnPageBubbles: document.getElementById('tabBtnPageBubbles'),
+        currentBubbleCountBadge: document.getElementById('currentBubbleCountBadge'),
+        btnCopyAllText: document.getElementById('btnCopyAllText'),
+        btnDownloadTxt: document.getElementById('btnDownloadTxt'),
+        btnDownloadJson: document.getElementById('btnDownloadJson'),
+        chkIncludeHeaders: document.getElementById('chkIncludeHeaders'),
+        totalCharsStat: document.getElementById('totalCharsStat'),
+        btnFontSmaller: document.getElementById('btnFontSmaller'),
+        btnFontLarger: document.getElementById('btnFontLarger'),
+        panelAllText: document.getElementById('panelAllText'),
+        fullMangaTextarea: document.getElementById('fullMangaTextarea'),
+        panelPageBubbles: document.getElementById('panelPageBubbles'),
+        toastContainer: document.getElementById('toastContainer')
+      };
+
+      // -----------------------------------------------------------------------
+      // Utility Helpers: Toasts, Clipboard, Progress, IndexedDB Weight Cache
+      // -----------------------------------------------------------------------
+      function showToast(message, kind) {
+        const toast = document.createElement('div');
+        const bg = kind === 'error'
+          ? 'bg-rose-600 text-white'
+          : kind === 'warn'
+          ? 'bg-amber-600 text-white'
+          : 'bg-slate-900 text-white';
+        toast.className = 'pointer-events-auto px-3.5 py-2.5 rounded-xl shadow-lg text-xs font-medium transition-opacity duration-300 max-w-xs ' + bg;
+        toast.textContent = message;
+        el.toastContainer.appendChild(toast);
+        setTimeout(() => {
+          toast.style.opacity = '0';
+          setTimeout(() => toast.remove(), 300);
+        }, 3200);
+      }
+
+      async function copyTextSafe(text, label) {
+        if (!text) {
+          showToast('No Japanese text extracted yet to copy.', 'warn');
+          return;
+        }
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            showToast(label || 'Copied Japanese text to clipboard!');
+            return;
+          }
+        } catch (_err) {
+          // Fallback for sandboxed iframes
+        }
+        const temp = document.createElement('textarea');
+        temp.value = text;
+        temp.style.position = 'fixed';
+        temp.style.opacity = '0';
+        document.body.appendChild(temp);
+        temp.focus();
+        temp.select();
+        try {
+          document.execCommand('copy');
+          showToast(label || 'Copied Japanese text to clipboard!');
+        } catch (_e) {
+          showToast('Copy failed — select and press Ctrl+C.', 'error');
+        }
+        temp.remove();
+      }
+
+      function setProgress(visible, message, pct) {
+        if (!visible) {
+          el.progressContainer.classList.add('hidden');
+          return;
+        }
+        el.progressContainer.classList.remove('hidden');
+        if (message !== undefined) el.progressStatusText.textContent = message;
+        if (pct !== undefined) {
+          const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+          el.progressPercentText.textContent = clamped + '%';
+          el.progressBarFill.style.width = clamped + '%';
+        }
+      }
+
+      // IndexedDB caching for ONNX weights (wrapped safely in try/catch for iframe sandboxes)
+      function openModelCacheDB() {
+        return new Promise((resolve) => {
+          try {
+            if (!window.indexedDB) return resolve(null);
+            const req = window.indexedDB.open('mokuro_web_onnx_cache_v1', 1);
+            req.onupgradeneeded = () => {
+              const db = req.result;
+              if (!db.objectStoreNames.contains('blobs')) {
+                db.createObjectStore('blobs');
+              }
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => resolve(null);
+          } catch (_e) {
+            resolve(null);
+          }
+        });
+      }
+
+      async function idbGet(key) {
+        const db = await openModelCacheDB();
+        if (!db) return null;
+        return new Promise((resolve) => {
+          try {
+            const tx = db.transaction('blobs', 'readonly');
+            const req = tx.objectStore('blobs').get(key);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => resolve(null);
+          } catch (_e) {
+            resolve(null);
+          }
+        });
+      }
+
+      async function idbPut(key, val) {
+        const db = await openModelCacheDB();
+        if (!db) return;
+        return new Promise((resolve) => {
+          try {
+            const tx = db.transaction('blobs', 'readwrite');
+            tx.objectStore('blobs').put(val, key);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+          } catch (_e) {
+            resolve();
+          }
+        });
+      }
+
+      async function fetchWithProgressCached(cacheKey, url, label, basePct, spanPct) {
+        const cached = await idbGet(cacheKey);
+        if (cached && cached.byteLength > 1024) {
+          setProgress(true, 'Loaded cached ' + label, basePct + spanPct);
+          return cached;
+        }
+        setProgress(true, 'Downloading ' + label + ' (cached after 1st load)…', basePct);
+        const resp = await fetch(url, { mode: 'cors' });
+        if (!resp.ok) {
+          throw new Error('Failed to download ' + label + ' (HTTP ' + resp.status + ')');
+        }
+        const total = parseInt(resp.headers.get('content-length') || '0', 10);
+        if (!resp.body || !resp.body.getReader) {
+          const buf = await resp.arrayBuffer();
+          await idbPut(cacheKey, buf);
+          return buf;
+        }
+        const reader = resp.body.getReader();
+        const chunks = [];
+        let received = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (state.abortRequested) {
+            try { await reader.cancel(); } catch (_e) { /* ignore */ }
+            throw new Error('ABORTED');
+          }
+          chunks.push(value);
+          received += value.byteLength;
+          if (total > 0) {
+            const ratio = received / total;
+            const mbDone = (received / 1048576).toFixed(1);
+            const mbTotal = (total / 1048576).toFixed(1);
+            setProgress(
+              true,
+              'Downloading ' + label + ': ' + mbDone + ' / ' + mbTotal + ' MB',
+              basePct + ratio * spanPct
+            );
+          } else {
+            const mbDone = (received / 1048576).toFixed(1);
+            setProgress(true, 'Downloading ' + label + ': ' + mbDone + ' MB', basePct + spanPct * 0.5);
+          }
+        }
+        const out = new Uint8Array(received);
+        let offset = 0;
+        for (const c of chunks) {
+          out.set(c, offset);
+          offset += c.byteLength;
+        }
+        const buffer = out.buffer;
+        await idbPut(cacheKey, buffer);
+        return buffer;
+      }
+
+      // -----------------------------------------------------------------------
+      // Reading Order Sorter: Recursive Manga XY-Cut (Top-to-Bottom, Right-to-Left)
+      // -----------------------------------------------------------------------
+      function sortBlocksByReadingOrder(blocks, mode) {
+        if (!blocks || blocks.length <= 1) return blocks || [];
+        const copy = blocks.map((b) => ({ ...b }));
+        if (mode === 'ttb') {
+          copy.sort((a, b) => (a.y1 - b.y1) || (b.x2 - a.x2));
+        } else if (mode === 'ltr') {
+          const ordered = xyCutSort(copy, false);
+          return ordered.map((b, i) => ({ ...b, index: i + 1 }));
+        } else {
+          const ordered = xyCutSort(copy, true);
+          return ordered.map((b, i) => ({ ...b, index: i + 1 }));
+        }
+        return copy.map((b, i) => ({ ...b, index: i + 1 }));
+      }
+
+      function xyCutSort(items, rightToLeft) {
+        if (items.length <= 1) return items;
+
+        // 1. Try horizontal split (top-to-bottom panel rows)
+        const byY = [...items].sort((a, b) => a.y1 - b.y1);
+        let maxEndY = byY[0].y2;
+        for (let i = 0; i < byY.length - 1; i++) {
+          if (byY[i].y2 > maxEndY) maxEndY = byY[i].y2;
+          if (byY[i + 1].y1 >= maxEndY - 4) {
+            const topGroup = byY.slice(0, i + 1);
+            const bottomGroup = byY.slice(i + 1);
+            return [...xyCutSort(topGroup, rightToLeft), ...xyCutSort(bottomGroup, rightToLeft)];
+          }
+        }
+
+        // 2. Try vertical split (right-to-left or left-to-right columns/panels)
+        const byX = [...items].sort((a, b) => a.x1 - b.x1);
+        let maxEndX = byX[0].x2;
+        for (let i = 0; i < byX.length - 1; i++) {
+          if (byX[i].x2 > maxEndX) maxEndX = byX[i].x2;
+          if (byX[i + 1].x1 >= maxEndX - 4) {
+            const leftGroup = byX.slice(0, i + 1);
+            const rightGroup = byX.slice(i + 1);
+            return rightToLeft
+              ? [...xyCutSort(rightGroup, rightToLeft), ...xyCutSort(leftGroup, rightToLeft)]
+              : [...xyCutSort(leftGroup, rightToLeft), ...xyCutSort(rightGroup, rightToLeft)];
+          }
+        }
+
+        // 3. Fallback within overlapping cluster
+        return [...items].sort((a, b) => {
+          const ay = (a.y1 + a.y2) * 0.5;
+          const by = (b.y1 + b.y2) * 0.5;
+          const ax = (a.x1 + a.x2) * 0.5;
+          const bx = (b.x1 + b.x2) * 0.5;
+          return rightToLeft ? (ay - by) + (bx - ax) * 0.85 : (ay - by) + (ax - bx) * 0.85;
+        });
+      }
+
+      // -----------------------------------------------------------------------
+      // Detector 1: Fast Manga Speech-Bubble & Glyph Cluster Detector (0 MB)
+      // -----------------------------------------------------------------------
+      function detectSpeechBubblesHeuristic(imgEl) {
+        const origW = imgEl.naturalWidth || imgEl.width;
+        const origH = imgEl.naturalHeight || imgEl.height;
+        if (!origW || !origH) return [];
+
+        const maxDim = 960;
+        const scale = Math.min(1, maxDim / Math.max(origW, origH));
+        const W = Math.max(32, Math.round(origW * scale));
+        const H = Math.max(32, Math.round(origH * scale));
+
+        const cvs = document.createElement('canvas');
+        cvs.width = W;
+        cvs.height = H;
+        const ctx = cvs.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(imgEl, 0, 0, W, H);
+        const rgba = ctx.getImageData(0, 0, W, H).data;
+
+        const N = W * H;
+        const gray = new Uint8Array(N);
+        // Integral image of bright pixels (gray >= 198) for O(1) local white-balloon neighborhood check
+        const brightIntegral = new Int32Array((W + 1) * (H + 1));
+
+        for (let y = 0; y < H; y++) {
+          let rowSum = 0;
+          const rowOff = y * W;
+          const intOff = (y + 1) * (W + 1);
+          const prevIntOff = y * (W + 1);
+          for (let x = 0; x < W; x++) {
+            const p = (rowOff + x) * 4;
+            const lum = (rgba[p] * 77 + rgba[p + 1] * 150 + rgba[p + 2] * 29) >> 8;
+            gray[rowOff + x] = lum;
+            if (lum >= 198) rowSum++;
+            brightIntegral[intOff + x + 1] = brightIntegral[prevIntOff + x + 1] + rowSum;
+          }
+        }
+
+        function rectBrightRatio(x1, y1, x2, y2) {
+          const ax1 = Math.max(0, x1);
+          const ay1 = Math.max(0, y1);
+          const ax2 = Math.min(W, x2);
+          const ay2 = Math.min(H, y2);
+          const area = (ax2 - ax1) * (ay2 - ay1);
+          if (area <= 0) return 0;
+          const stride = W + 1;
+          const sum =
+            brightIntegral[ay2 * stride + ax2] -
+            brightIntegral[ay1 * stride + ax2] -
+            brightIntegral[ay2 * stride + ax1] +
+            brightIntegral[ay1 * stride + ax1];
+          return sum / area;
+        }
+
+        // Connected components on dark ink pixels (gray < 120)
+        const visited = new Uint8Array(N);
+        const stack = new Int32Array(N);
+        const glyphs = [];
+
+        const maxGlyphW = Math.max(14, W * 0.095);
+        const maxGlyphH = Math.max(14, H * 0.095);
+
+        for (let idx = 0; idx < N; idx++) {
+          if (visited[idx] || gray[idx] >= 120) continue;
+          visited[idx] = 1;
+          let sp = 0;
+          stack[sp++] = idx;
+
+          let minX = idx % W;
+          let maxX = minX;
+          let minY = (idx / W) | 0;
+          let maxY = minY;
+          let count = 0;
+
+          while (sp > 0) {
+            const cur = stack[--sp];
+            count++;
+            const cx = cur % W;
+            const cy = (cur / W) | 0;
+            if (cx < minX) minX = cx;
+            if (cx > maxX) maxX = cx;
+            if (cy < minY) minY = cy;
+            if (cy > maxY) maxY = cy;
+
+            // 8-neighbors
+            for (let dy = -1; dy <= 1; dy++) {
+              const ny = cy + dy;
+              if (ny < 0 || ny >= H) continue;
+              const nRow = ny * W;
+              for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dy === 0) continue;
+                const nx = cx + dx;
+                if (nx < 0 || nx >= W) continue;
+                const nIdx = nRow + nx;
+                if (!visited[nIdx] && gray[nIdx] < 120) {
+                  visited[nIdx] = 1;
+                  stack[sp++] = nIdx;
+                }
+              }
+            }
+          }
+
+          const bw = maxX - minX + 1;
+          const bh = maxY - minY + 1;
+          if (count < 5) continue;
+          if (bw > maxGlyphW || bh > maxGlyphH) continue;
+          if (bw < 2 && bh < 4) continue;
+          const fill = count / (bw * bh);
+          if (fill < 0.07 || fill > 0.94) continue;
+          const aspect = bw / bh;
+          if (aspect < 0.12 || aspect > 8.0) continue;
+
+          // Check surrounding bright balloon/caption background
+          const pad = Math.max(4, Math.round(Math.max(bw, bh) * 0.35));
+          const brightFrac = rectBrightRatio(minX - pad, minY - pad, maxX + pad + 1, maxY + pad + 1);
+          if (brightFrac < 0.50) continue;
+
+          glyphs.push({
+            x1: minX,
+            y1: minY,
+            x2: maxX + 1,
+            y2: maxY + 1,
+            cx: (minX + maxX + 1) * 0.5,
+            cy: (minY + maxY + 1) * 0.5,
+            size: Math.max(bw, bh)
+          });
+        }
+
+        if (glyphs.length === 0) {
+          return [{
+            id: 'blk_' + Math.random().toString(36).slice(2, 9),
+            x1: 0,
+            y1: 0,
+            x2: origW,
+            y2: origH,
+            conf: 0.5,
+            text: '',
+            charConf: null
+          }];
+        }
+
+        // Check if segment between two glyph centers crosses a continuous dark border line
+        function crossesDarkWall(g1, g2) {
+          const x0 = Math.round(g1.cx);
+          const y0 = Math.round(g1.cy);
+          const x1 = Math.round(g2.cx);
+          const y1 = Math.round(g2.cy);
+          const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+          if (steps < 4) return false;
+          let whiteSeen = false;
+          let darkAfterWhite = 0;
+          let whiteAfterDark = false;
+          for (let s = 2; s < steps - 1; s++) {
+            const px = Math.round(x0 + ((x1 - x0) * s) / steps);
+            const py = Math.round(y0 + ((y1 - y0) * s) / steps);
+            const lum = gray[py * W + px];
+            if (!whiteSeen) {
+              if (lum > 200) whiteSeen = true;
+            } else if (darkAfterWhite === 0) {
+              if (lum < 110) darkAfterWhite = 1;
+            } else if (!whiteAfterDark) {
+              if (lum < 110) darkAfterWhite++;
+              else if (lum > 200) whiteAfterDark = true;
+            }
+          }
+          // If path goes white -> thin dark wall -> white and midpoint area isn't bright, avoid merging across balloons
+          if (whiteSeen && whiteAfterDark && darkAfterWhite >= 2 && darkAfterWhite <= 7) {
+            const mx = Math.round((x0 + x1) * 0.5);
+            const my = Math.round((y0 + y1) * 0.5);
+            if (gray[my * W + mx] < 120) return true;
+          }
+          return false;
+        }
+
+        // Union-Find clustering of glyphs into speech bubbles / text blocks
+        const parent = new Int32Array(glyphs.length);
+        for (let i = 0; i < glyphs.length; i++) parent[i] = i;
+        function find(i) {
+          while (parent[i] !== i) {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+          }
+          return i;
+        }
+        function unite(i, j) {
+          const ri = find(i);
+          const rj = find(j);
+          if (ri !== rj) parent[ri] = rj;
+        }
+
+        for (let i = 0; i < glyphs.length; i++) {
+          const a = glyphs[i];
+          for (let j = i + 1; j < glyphs.length; j++) {
+            const b = glyphs[j];
+            const refSize = Math.max(a.size, b.size, 10);
+            const gapX = Math.max(0, Math.max(a.x1 - b.x2, b.x1 - a.x2));
+            const gapY = Math.max(0, Math.max(a.y1 - b.y2, b.y1 - a.y2));
+            if (gapX <= refSize * 1.45 && gapY <= refSize * 1.45) {
+              if (!crossesDarkWall(a, b)) {
+                unite(i, j);
+              }
+            }
+          }
+        }
+
+        const clusterMap = new Map();
+        for (let i = 0; i < glyphs.length; i++) {
+          const r = find(i);
+          const g = glyphs[i];
+          if (!clusterMap.has(r)) {
+            clusterMap.set(r, { x1: g.x1, y1: g.y1, x2: g.x2, y2: g.y2, count: 1, sumSize: g.size });
+          } else {
+            const c = clusterMap.get(r);
+            if (g.x1 < c.x1) c.x1 = g.x1;
+            if (g.y1 < c.y1) c.y1 = g.y1;
+            if (g.x2 > c.x2) c.x2 = g.x2;
+            if (g.y2 > c.y2) c.y2 = g.y2;
+            c.count++;
+            c.sumSize += g.size;
+          }
+        }
+
+        let rawBoxes = [];
+        for (const c of clusterMap.values()) {
+          const cw = c.x2 - c.x1;
+          const ch = c.y2 - c.y1;
+          if (c.count < 2 && Math.max(cw, ch) < 14) continue;
+          if (cw < 8 || ch < 8) continue;
+          const pad = Math.max(5, Math.round((c.sumSize / c.count) * 0.42));
+          rawBoxes.push({
+            x1: Math.max(0, (c.x1 - pad) / scale),
+            y1: Math.max(0, (c.y1 - pad) / scale),
+            x2: Math.min(origW, (c.x2 + pad) / scale),
+            y2: Math.min(origH, (c.y2 + pad) / scale),
+            conf: Math.min(0.98, 0.65 + c.count * 0.03)
+          });
+        }
+
+        rawBoxes = mergeNestedBoxes(rawBoxes);
+        if (rawBoxes.length === 0) {
+          rawBoxes.push({ x1: 0, y1: 0, x2: origW, y2: origH, conf: 0.5 });
+        }
+
+        return rawBoxes.map((b) => ({
+          id: 'blk_' + Math.random().toString(36).slice(2, 9),
+          x1: Math.round(b.x1),
+          y1: Math.round(b.y1),
+          x2: Math.round(b.x2),
+          y2: Math.round(b.y2),
+          conf: b.conf,
+          text: '',
+          charConf: null
+        }));
+      }
+
+      function mergeNestedBoxes(boxes) {
+        const list = boxes.map((b) => ({ ...b }));
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (let i = 0; i < list.length; i++) {
+            for (let j = i + 1; j < list.length; j++) {
+              const a = list[i];
+              const b = list[j];
+              const ix1 = Math.max(a.x1, b.x1);
+              const iy1 = Math.max(a.y1, b.y1);
+              const ix2 = Math.min(a.x2, b.x2);
+              const iy2 = Math.min(a.y2, b.y2);
+              const inter = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);
+              if (inter <= 0) continue;
+              const areaA = (a.x2 - a.x1) * (a.y2 - a.y1);
+              const areaB = (b.x2 - b.x1) * (b.y2 - b.y1);
+              const minArea = Math.min(areaA, areaB);
+              const iou = inter / (areaA + areaB - inter);
+              if (inter / minArea > 0.72 || iou > 0.42) {
+                a.x1 = Math.min(a.x1, b.x1);
+                a.y1 = Math.min(a.y1, b.y1);
+                a.x2 = Math.max(a.x2, b.x2);
+                a.y2 = Math.max(a.y2, b.y2);
+                a.conf = Math.max(a.conf, b.conf);
+                list.splice(j, 1);
+                changed = true;
+                break;
+              }
+            }
+            if (changed) break;
+          }
+        }
+        return list;
+      }
+
+      // -----------------------------------------------------------------------
+      // Detector 2: Neural comic-text-detector ONNX (dmMaze YOLOv5 1024x1024)
+      // -----------------------------------------------------------------------
+      async function ensureCtdSession() {
+        if (runtime.ctdSession) return runtime.ctdSession;
+        if (!window.ort) throw new Error('ONNX Runtime Web failed to load.');
+        const buf = await fetchWithProgressCached('ctd_onnx_v1', MODEL_URLS.ctdOnnx, 'comic-text-detector ONNX', 2, 28);
+        setProgress(true, 'Compiling comic-text-detector WebAssembly graph…', 32);
+        runtime.ctdSession = await window.ort.InferenceSession.create(buf, {
+          executionProviders: ['wasm']
+        });
+        return runtime.ctdSession;
+      }
+
+      async function detectComicTextOnnx(imgEl) {
+        const origW = imgEl.naturalWidth || imgEl.width;
+        const origH = imgEl.naturalHeight || imgEl.height;
+        const session = await ensureCtdSession();
+
+        const S = 1024;
+        const ratio = Math.min(S / origW, S / origH);
+        const newW = Math.round(origW * ratio);
+        const newH = Math.round(origH * ratio);
+
+        const cvs = document.createElement('canvas');
+        cvs.width = S;
+        cvs.height = S;
+        const ctx = cvs.getContext('2d', { willReadFrequently: true });
+        ctx.fillStyle = 'rgb(114,114,114)';
+        ctx.fillRect(0, 0, S, S);
+        ctx.drawImage(imgEl, 0, 0, newW, newH);
+        const rgba = ctx.getImageData(0, 0, S, S).data;
+
+        const plane = S * S;
+        const input = new Float32Array(3 * plane);
+        for (let i = 0; i < plane; i++) {
+          const p = i * 4;
+          input[i] = rgba[p] / 255.0;
+          input[plane + i] = rgba[p + 1] / 255.0;
+          input[2 * plane + i] = rgba[p + 2] / 255.0;
+        }
+
+        const inName = session.inputNames[0];
+        const outputs = await session.run({
+          [inName]: new window.ort.Tensor('float32', input, [1, 3, S, S])
+        });
+
+        let blkTensor = outputs.blk || null;
+        if (!blkTensor) {
+          for (const name of session.outputNames) {
+            const t = outputs[name];
+            if (t && t.dims && t.dims.length === 3 && t.dims[2] >= 5 && t.dims[2] <= 16) {
+              blkTensor = t;
+              break;
+            }
+          }
+        }
+        if (!blkTensor) {
+          return detectSpeechBubblesHeuristic(imgEl);
+        }
+
+        const numPreds = blkTensor.dims[1];
+        const stride = blkTensor.dims[2];
+        const data = blkTensor.data;
+        const candidates = [];
+
+        // Detect normalized vs pixel coords
+        let maxCoord = 0;
+        for (let i = 0; i < Math.min(numPreds, 500); i++) {
+          const v = data[i * stride + 2];
+          if (v > maxCoord) maxCoord = v;
+        }
+        const coordMul = maxCoord <= 2.0 ? S : 1.0;
+
+        for (let i = 0; i < numPreds; i++) {
+          const base = i * stride;
+          const obj = data[base + 4];
+          if (obj < 0.35) continue;
+          let maxCls = 1.0;
+          if (stride > 5) {
+            maxCls = 0;
+            for (let c = 5; c < stride; c++) {
+              if (data[base + c] > maxCls) maxCls = data[base + c];
+            }
+          }
+          const score = obj * maxCls;
+          if (score < 0.35) continue;
+
+          const cx = data[base] * coordMul;
+          const cy = data[base + 1] * coordMul;
+          const bw = data[base + 2] * coordMul;
+          const bh = data[base + 3] * coordMul;
+
+          const padPx = 4;
+          const x1 = Math.max(0, (cx - bw * 0.5) / ratio - padPx);
+          const y1 = Math.max(0, (cy - bh * 0.5) / ratio - padPx);
+          const x2 = Math.min(origW, (cx + bw * 0.5) / ratio + padPx);
+          const y2 = Math.min(origH, (cy + bh * 0.5) / ratio + padPx);
+          if (x2 - x1 >= 8 && y2 - y1 >= 8) {
+            candidates.push({ x1, y1, x2, y2, conf: score });
+          }
+        }
+
+        // YOLOv5 NMS (iouThresh = 0.35)
+        candidates.sort((a, b) => b.conf - a.conf);
+        const kept = [];
+        for (const cand of candidates) {
+          let suppressed = false;
+          for (const k of kept) {
+            const ix1 = Math.max(cand.x1, k.x1);
+            const iy1 = Math.max(cand.y1, k.y1);
+            const ix2 = Math.min(cand.x2, k.x2);
+            const iy2 = Math.min(cand.y2, k.y2);
+            const inter = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);
+            if (inter > 0) {
+              const areaA = (cand.x2 - cand.x1) * (cand.y2 - cand.y1);
+              const areaB = (k.x2 - k.x1) * (k.y2 - k.y1);
+              const iou = inter / (areaA + areaB - inter);
+              if (iou > 0.35) {
+                suppressed = true;
+                break;
+              }
+            }
+          }
+          if (!suppressed) kept.push(cand);
+        }
+
+        const merged = mergeNestedBoxes(kept);
+        if (merged.length === 0) {
+          return detectSpeechBubblesHeuristic(imgEl);
+        }
+
+        return merged.map((b) => ({
+          id: 'blk_' + Math.random().toString(36).slice(2, 9),
+          x1: Math.round(b.x1),
+          y1: Math.round(b.y1),
+          x2: Math.round(b.x2),
+          y2: Math.round(b.y2),
+          conf: b.conf,
+          text: '',
+          charConf: null
+        }));
+      }
+
+      async function detectBlocksForPage(imgEl) {
+        const origW = imgEl.naturalWidth || imgEl.width;
+        const origH = imgEl.naturalHeight || imgEl.height;
+        let blocks = [];
+
+        if (state.detectorMode === 'whole-image') {
+          blocks = [{
+            id: 'blk_' + Math.random().toString(36).slice(2, 9),
+            x1: 0,
+            y1: 0,
+            x2: origW,
+            y2: origH,
+            conf: 1.0,
+            text: '',
+            charConf: null
+          }];
+        } else if (state.detectorMode === 'ctd-onnx') {
+          try {
+            blocks = await detectComicTextOnnx(imgEl);
+          } catch (err) {
+            if (err && err.message === 'ABORTED') throw err;
+            showToast('Neural detector unavailable (' + err.message + '); switched to Fast Bubble Detector.', 'warn');
+            blocks = detectSpeechBubblesHeuristic(imgEl);
+          }
+        } else {
+          blocks = detectSpeechBubblesHeuristic(imgEl);
+        }
+
+        return sortBlocksByReadingOrder(blocks, state.readingOrder);
+      }
+
+      // -----------------------------------------------------------------------
+      // OCR Engine 1: kha-white/manga-ocr ONNX (VisionEncoderDecoder DeiT + BERT)
+      // -----------------------------------------------------------------------
+      async function ensureMangaOcrReady() {
+        if (runtime.mocrEncoderSession && runtime.mocrDecoderSession && runtime.mocrVocab) {
+          return;
+        }
+        if (!window.ort) throw new Error('ONNX Runtime Web is not available.');
+
+        if (!runtime.mocrVocab) {
+          const cachedVocab = await idbGet('mocr_vocab_v1');
+          if (cachedVocab && Array.isArray(cachedVocab) && cachedVocab.length > 1000) {
+            runtime.mocrVocab = cachedVocab;
+          } else {
+            setProgress(true, 'Fetching kha-white/manga-ocr Japanese vocabulary (6,144 tokens)…', 5);
+            const vResp = await fetch(MODEL_URLS.mocrVocab, { mode: 'cors' });
+            if (!vResp.ok) throw new Error('Failed to load manga-ocr vocab.txt');
+            const vText = await vResp.text();
+            runtime.mocrVocab = vText.split(/\r?\n/);
+            await idbPut('mocr_vocab_v1', runtime.mocrVocab);
+          }
+        }
+
+        if (!runtime.mocrEncoderSession) {
+          const encBuf = await fetchWithProgressCached(
+            'mocr_enc_q8_v1',
+            MODEL_URLS.mocrEncoder,
+            'manga-ocr ViT Encoder (87 MB)',
+            10,
+            50
+          );
+          setProgress(true, 'Initializing manga-ocr Vision Encoder…', 62);
+          runtime.mocrEncoderSession = await window.ort.InferenceSession.create(encBuf, {
+            executionProviders: ['wasm']
+          });
+        }
+
+        if (!runtime.mocrDecoderSession) {
+          const decBuf = await fetchWithProgressCached(
+            'mocr_dec_q8_v1',
+            MODEL_URLS.mocrDecoder,
+            'manga-ocr Japanese Decoder (30 MB)',
+            65,
+            25
+          );
+          setProgress(true, 'Initializing manga-ocr Japanese Char-BERT Decoder…', 92);
+          runtime.mocrDecoderSession = await window.ort.InferenceSession.create(decBuf, {
+            executionProviders: ['wasm']
+          });
+        }
+      }
+
+      function postProcessMangaOcrText(rawStr) {
+        if (!rawStr) return '';
+        let s = rawStr.replace(/\s+/g, '');
+        s = s.replace(/\.{2,}/g, '…').replace(/．{2,}/g, '…');
+        // Convert ASCII ! and ? to full-width manga punctuation
+        s = s.replace(/!/g, '！').replace(/\?/g, '？');
+        return s.trim();
+      }
+
+      async function recognizeCropMangaOcr(imgEl, box) {
+        await ensureMangaOcrReady();
+
+        const S = 224;
+        const cropW = Math.max(1, box.x2 - box.x1);
+        const cropH = Math.max(1, box.y2 - box.y1);
+
+        const cvs = document.createElement('canvas');
+        cvs.width = S;
+        cvs.height = S;
+        const ctx = cvs.getContext('2d', { willReadFrequently: true });
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, S, S);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(imgEl, box.x1, box.y1, cropW, cropH, 0, 0, S, S);
+
+        const rgba = ctx.getImageData(0, 0, S, S).data;
+        const plane = S * S;
+        const pixelValues = new Float32Array(3 * plane);
+
+        // Exact kha-white/manga-ocr preprocessing: PIL grayscale -> 3ch RGB -> (x/255 - 0.5)/0.5
+        for (let i = 0; i < plane; i++) {
+          const p = i * 4;
+          const gray = Math.round(0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2]);
+          const norm = gray / 127.5 - 1.0;
+          pixelValues[i] = norm;
+          pixelValues[plane + i] = norm;
+          pixelValues[2 * plane + i] = norm;
+        }
+
+        const encInName = runtime.mocrEncoderSession.inputNames[0];
+        const encOut = await runtime.mocrEncoderSession.run({
+          [encInName]: new window.ort.Tensor('float32', pixelValues, [1, 3, S, S])
+        });
+        const hidden = encOut.last_hidden_state || encOut[runtime.mocrEncoderSession.outputNames[0]];
+
+        // Greedy decoding starting from [CLS] (id = 2) until [SEP] (id = 3)
+        const ids = [2];
+        const probs = [];
+        const maxSteps = 160;
+        const decSession = runtime.mocrDecoderSession;
+
+        for (let step = 0; step < maxSteps; step++) {
+          if (state.abortRequested) throw new Error('ABORTED');
+
+          const feeds = {};
+          for (const name of decSession.inputNames) {
+            if (name === 'input_ids') {
+              feeds[name] = new window.ort.Tensor('int64', BigInt64Array.from(ids, BigInt), [1, ids.length]);
+            } else if (name === 'encoder_hidden_states') {
+              feeds[name] = hidden;
+            } else if (name === 'encoder_attention_mask') {
+              const encSeq = hidden.dims[1] || 197;
+              feeds[name] = new window.ort.Tensor('int64', new BigInt64Array(encSeq).fill(1n), [1, encSeq]);
+            } else if (name === 'attention_mask') {
+              feeds[name] = new window.ort.Tensor('int64', new BigInt64Array(ids.length).fill(1n), [1, ids.length]);
+            } else if (name === 'use_cache_branch') {
+              feeds[name] = new window.ort.Tensor('bool', [false], [1]);
+            } else if (name.startsWith('past_key_values')) {
+              feeds[name] = new window.ort.Tensor('float32', new Float32Array(0), [1, 12, 0, 64]);
+            }
+          }
+
+          const decOut = await decSession.run(feeds);
+          const logitsTensor = decOut.logits || decOut[decSession.outputNames[0]];
+          const vocabSize = logitsTensor.dims[logitsTensor.dims.length - 1];
+          const offset = (ids.length - 1) * vocabSize;
+          const logits = logitsTensor.data;
+
+          let bestId = 0;
+          let bestLogit = -Infinity;
+          for (let v = 0; v < vocabSize; v++) {
+            const val = logits[offset + v];
+            if (val > bestLogit) {
+              bestLogit = val;
+              bestId = v;
+            }
+          }
+
+          // Compute softmax confidence of chosen token
+          let sumExp = 0;
+          for (let v = 0; v < vocabSize; v++) {
+            sumExp += Math.exp(logits[offset + v] - bestLogit);
+          }
+          const tokenProb = sumExp > 0 ? 1.0 / sumExp : 0;
+
+          if (bestId === 3 || bestId === 0) break; // [SEP] or [PAD]
+          ids.push(bestId);
+          probs.push(tokenProb);
+
+          // Guard against degenerate repetition loops on empty noise crops
+          if (ids.length >= 10) {
+            const tail = ids.slice(-7);
+            if (tail.every((t) => t === tail[0])) break;
+          }
+        }
+
+        const special = new Set(['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]', '']);
+        const chars = [];
+        for (let i = 1; i < ids.length; i++) {
+          let tok = runtime.mocrVocab[ids[i]] || '';
+          if (special.has(tok)) continue;
+          if (tok.startsWith('##')) tok = tok.slice(2);
+          chars.push(tok);
+        }
+
+        const avgConf = probs.length > 0
+          ? probs.reduce((a, b) => a + b, 0) / probs.length
+          : 0;
+
+        return {
+          text: postProcessMangaOcrText(chars.join('')),
+          charConf: avgConf
+        };
+      }
+
+      // -----------------------------------------------------------------------
+      // OCR Engine 2: Tesseract.js v5 (jpn_vert + jpn Lightweight Fallback)
+      // -----------------------------------------------------------------------
+      async function ensureTesseractReady() {
+        if (runtime.tesseractWorker) return runtime.tesseractWorker;
+        if (!window.Tesseract) throw new Error('Tesseract.js CDN failed to load.');
+        setProgress(true, 'Loading Tesseract.js v5 Japanese (jpn_vert + jpn) worker…', 20);
+        runtime.tesseractWorker = await window.Tesseract.createWorker(['jpn_vert', 'jpn'], 1, {
+          logger: (m) => {
+            if (m && m.status && typeof m.progress === 'number') {
+              setProgress(true, 'Tesseract.js: ' + m.status, 15 + m.progress * 65);
+            }
+          }
+        });
+        return runtime.tesseractWorker;
+      }
+
+      async function recognizeCropTesseract(imgEl, box) {
+        const worker = await ensureTesseractReady();
+        const cropW = Math.max(1, box.x2 - box.x1);
+        const cropH = Math.max(1, box.y2 - box.y1);
+
+        const cvs = document.createElement('canvas');
+        // Slight 2x upscale improves Tesseract glyph accuracy on manga speech bubbles
+        cvs.width = cropW * 2;
+        cvs.height = cropH * 2;
+        const ctx = cvs.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, cvs.width, cvs.height);
+        ctx.drawImage(imgEl, box.x1, box.y1, cropW, cropH, 0, 0, cvs.width, cvs.height);
+
+        const isVertical = cropH > cropW * 1.15;
+        await worker.setParameters({
+          tessedit_pageseg_mode: isVertical ? '5' : '6'
+        });
+        const res = await worker.recognize(cvs);
+        const raw = (res && res.data && res.data.text) ? res.data.text : '';
+        const cleaned = raw.replace(/\s+/g, '').trim();
+        const conf = (res && res.data && typeof res.data.confidence === 'number')
+          ? res.data.confidence / 100
+          : null;
+        return { text: cleaned, charConf: conf };
+      }
+
+      async function recognizeSingleBlock(imgEl, box) {
+        if (state.ocrEngine === 'manga-ocr') {
+          return recognizeCropMangaOcr(imgEl, box);
+        }
+        return recognizeCropTesseract(imgEl, box);
+      }
+
+      // -----------------------------------------------------------------------
+      // Extraction Orchestrator (Single Page & Full Folder Batch)
+      // -----------------------------------------------------------------------
+      function loadImageElement(src) {
+        return new Promise((resolve, reject) => {
+          const im = new Image();
+          im.crossOrigin = 'anonymous';
+          im.onload = () => resolve(im);
+          im.onerror = () => reject(new Error('Could not decode image'));
+          im.src = src;
+        });
+      }
+
+      function setExtractingUI(running) {
+        state.isExtracting = running;
+        el.btnExtractAll.disabled = running || state.pages.length === 0;
+        el.btnExtractPage.disabled = running || !getSelectedPage();
+        el.btnRedetectPage.disabled = running || !getSelectedPage();
+        if (running) {
+          el.btnStopExtract.classList.remove('hidden');
+          el.btnStopExtract.classList.add('inline-flex');
+          el.btnExtractAll.classList.add('opacity-60');
+        } else {
+          el.btnStopExtract.classList.add('hidden');
+          el.btnStopExtract.classList.remove('inline-flex');
+          el.btnExtractAll.classList.remove('opacity-60');
+        }
+      }
+
+      async function extractPagesQueue(targetPages) {
+        if (state.isExtracting || targetPages.length === 0) return;
+        state.abortRequested = false;
+        setExtractingUI(true);
+
+        try {
+          // Warm up chosen OCR engine first so download progress is smooth
+          if (state.ocrEngine === 'manga-ocr') {
+            await ensureMangaOcrReady();
+          } else {
+            await ensureTesseractReady();
+          }
+          if (state.detectorMode === 'ctd-onnx') {
+            try {
+              await ensureCtdSession();
+            } catch (detErr) {
+              if (detErr && detErr.message === 'ABORTED') throw detErr;
+              showToast('Falling back to Fast Bubble Detector: ' + detErr.message, 'warn');
+            }
+          }
+
+          for (let pIdx = 0; pIdx < targetPages.length; pIdx++) {
+            if (state.abortRequested) throw new Error('ABORTED');
+            const page = targetPages[pIdx];
+            page.status = 'detecting';
+            renderPageList();
+
+            // Auto-focus page being processed if user hasn't locked onto something else
+            state.selectedPageId = page.id;
+            renderActivePageStage();
+
+            setProgress(
+              true,
+              'Page ' + (pIdx + 1) + '/' + targetPages.length + ' (' + page.name + '): Detecting speech bubbles…',
+              (pIdx / targetPages.length) * 100
+            );
+
+            const imgEl = await loadImageElement(page.url);
+            if (!page.blocks || page.blocks.length === 0) {
+              page.blocks = await detectBlocksForPage(imgEl);
+            } else {
+              page.blocks = sortBlocksByReadingOrder(page.blocks, state.readingOrder);
+            }
+
+            page.status = 'recognizing';
+            renderPageList();
+            renderOverlayBoxes();
+            renderRightPanel();
+
+            const totalBlocks = page.blocks.length;
+            for (let bIdx = 0; bIdx < totalBlocks; bIdx++) {
+              if (state.abortRequested) throw new Error('ABORTED');
+              const blk = page.blocks[bIdx];
+              state.selectedBlockId = blk.id;
+              renderOverlayBoxes();
+
+              const overallPct = ((pIdx + (bIdx / Math.max(1, totalBlocks))) / targetPages.length) * 100;
+              setProgress(
+                true,
+                'Page ' + (pIdx + 1) + '/' + targetPages.length + ' · Bubble ' + (bIdx + 1) + '/' + totalBlocks + ' — Recognizing Japanese…',
+                overallPct
+              );
+
+              // Yield briefly so browser paints bounding box highlight
+              await new Promise((r) => setTimeout(r, 12));
+              const res = await recognizeSingleBlock(imgEl, blk);
+              blk.text = res.text;
+              blk.charConf = res.charConf;
+              updatePageFullText(page);
+              renderRightPanel();
+            }
+
+            page.status = 'done';
+            updatePageFullText(page);
+            renderPageList();
+            renderRightPanel();
+          }
+
+          setProgress(true, 'Extraction complete across ' + targetPages.length + ' page(s)!', 100);
+          showToast('Extracted Japanese text from ' + targetPages.length + ' manga page(s)!');
+          setTimeout(() => {
+            if (!state.isExtracting) setProgress(false);
+          }, 2200);
+        } catch (err) {
+          if (err && err.message === 'ABORTED') {
+            showToast('Extraction stopped.', 'warn');
+          } else {
+            showToast('OCR error: ' + (err ? err.message : 'Unknown error'), 'error');
+          }
+          for (const p of targetPages) {
+            if (p.status === 'detecting' || p.status === 'recognizing') {
+              p.status = 'pending';
+            }
+          }
+          setProgress(false);
+        } finally {
+          setExtractingUI(false);
+          renderPageList();
+          renderOverlayBoxes();
+          renderRightPanel();
+        }
+      }
+
+      function updatePageFullText(page) {
+        const lines = (page.blocks || [])
+          .map((b) => (b.text || '').trim())
+          .filter((t) => t.length > 0);
+        page.fullText = lines.join('\n');
+      }
+
+      // -----------------------------------------------------------------------
+      // File & Folder Ingestion (Input + Recursive Directory Drag-and-Drop)
+      // -----------------------------------------------------------------------
+      function revokeAllPages() {
+        for (const p of state.pages) {
+          if (p.isObjectUrl && p.url) {
+            try { URL.revokeObjectURL(p.url); } catch (_e) { /* ignore */ }
+          }
+        }
+      }
+
+      async function ingestFileList(rawFiles) {
+        const valid = Array.from(rawFiles || []).filter((f) => {
+          if (!f) return false;
+          if (f.type && f.type.startsWith('image/')) return true;
+          return IMAGE_EXT_RE.test(f.name || '');
+        });
+
+        if (valid.length === 0) {
+          showToast('No supported manga image files found in selection.', 'warn');
+          return;
+        }
+
+        // Sort naturally by relative path / filename so page_2.jpg precedes page_10.jpg
+        valid.sort((a, b) => {
+          const ka = a.webkitRelativePath || a.relativePath || a.name;
+          const kb = b.webkitRelativePath || b.relativePath || b.name;
+          return naturalCollator.compare(ka, kb);
+        });
+
+        // Replace sample pages automatically on first user upload
+        if (state.isSampleSet) {
+          revokeAllPages();
+          state.pages = [];
+          state.isSampleSet = false;
+        }
+
+        const newPages = [];
+        for (const file of valid) {
+          const url = URL.createObjectURL(file);
+          let width = 0;
+          let height = 0;
+          try {
+            const im = await loadImageElement(url);
+            width = im.naturalWidth || im.width;
+            height = im.naturalHeight || im.height;
+          } catch (_e) {
+            URL.revokeObjectURL(url);
+            continue;
+          }
+          newPages.push({
+            id: 'page_' + Math.random().toString(36).slice(2, 10),
+            name: file.name,
+            relativePath: file.webkitRelativePath || file.relativePath || file.name,
+            url,
+            isObjectUrl: true,
+            width,
+            height,
+            status: 'pending',
+            blocks: [],
+            fullText: ''
+          });
+        }
+
+        if (newPages.length === 0) {
+          showToast('Could not decode selected image files.', 'error');
+          return;
+        }
+
+        state.pages.push(...newPages);
+        state.selectedPageId = newPages[0].id;
+        state.selectedBlockId = null;
+        renderAll();
+        showToast('Loaded ' + newPages.length + ' manga page(s). Ready to extract!');
+      }
+
+      async function collectDroppedFiles(dataTransfer) {
+        const items = dataTransfer.items;
+        if (!items || items.length === 0) {
+          return Array.from(dataTransfer.files || []);
+        }
+        const entries = [];
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          if (item.webkitGetAsEntry) {
+            const entry = item.webkitGetAsEntry();
+            if (entry) entries.push(entry);
+          } else if (item.kind === 'file') {
+            const f = item.getAsFile();
+            if (f) entries.push({ isFile: true, _directFile: f });
+          }
+        }
+
+        const collected = [];
+        async function traverse(entry, prefix) {
+          if (entry._directFile) {
+            collected.push(entry._directFile);
+            return;
+          }
+          if (entry.isFile) {
+            const file = await new Promise((res) => entry.file(res, () => res(null)));
+            if (file) {
+              try {
+                Object.defineProperty(file, 'relativePath', { value: prefix + file.name });
+              } catch (_e) { /* ignore */ }
+              collected.push(file);
+            }
+          } else if (entry.isDirectory) {
+            const reader = entry.createReader();
+            let batch = [];
+            do {
+              batch = await new Promise((res) => reader.readEntries(res, () => res([])));
+              for (const child of batch) {
+                await traverse(child, prefix + entry.name + '/');
+              }
+            } while (batch.length > 0);
+          }
+        }
+
+        for (const e of entries) {
+          await traverse(e, '');
+        }
+        return collected.length > 0 ? collected : Array.from(dataTransfer.files || []);
+      }
+
+      // -----------------------------------------------------------------------
+      // Built-in Crisp Japanese Manga Sample Generator (2 Pages for Instant Test)
+      // -----------------------------------------------------------------------
+      function drawVerticalJapaneseLines(ctx, lines, topRightX, topY, fontSize, lineStep, charStep) {
+        ctx.save();
+        ctx.fillStyle = '#0f172a';
+        ctx.font = '700 ' + fontSize + 'px "Noto Sans JP", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        for (let col = 0; col < lines.length; col++) {
+          const x = topRightX - col * lineStep;
+          const chars = Array.from(lines[col]);
+          for (let r = 0; r < chars.length; r++) {
+            const ch = chars[r];
+            const y = topY + r * charStep;
+            if (ch === 'ー' || ch === '…') {
+              ctx.save();
+              ctx.translate(x, y + charStep * 0.48);
+              ctx.rotate(Math.PI / 2);
+              ctx.textBaseline = 'middle';
+              ctx.fillText(ch, 0, 0);
+              ctx.restore();
+            } else {
+              ctx.fillText(ch, x, y);
+            }
+          }
+        }
+        ctx.restore();
+      }
+
+      function drawSpeechOval(ctx, cx, cy, rx, ry) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.lineWidth = 3.5;
+        ctx.strokeStyle = '#0f172a';
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function createMangaSampleDataUrl(pageNumber) {
+        const W = 760;
+        const H = 1060;
+        const cvs = document.createElement('canvas');
+        cvs.width = W;
+        cvs.height = H;
+        const ctx = cvs.getContext('2d');
+
+        // Paper base
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, W, H);
+
+        function drawPanel(x, y, w, h, toneDensity) {
+          ctx.save();
+          ctx.fillStyle = '#e2e8f0';
+          ctx.fillRect(x, y, w, h);
+
+          // Subtle manga screentone & speed lines kept away from white bubbles
+          ctx.beginPath();
+          ctx.rect(x, y, w, h);
+          ctx.clip();
+
+          ctx.fillStyle = '#94a3b8';
+          for (let py = y + 8; py < y + h; py += toneDensity) {
+            for (let px = x + 8; px < x + w; px += toneDensity) {
+              ctx.fillRect(px, py, 2, 2);
+            }
+          }
+
+          // Dramatic diagonal speed lines in lower artwork zone
+          ctx.strokeStyle = '#475569';
+          ctx.lineWidth = 1.5;
+          for (let i = -w; i < w * 1.5; i += 22) {
+            ctx.beginPath();
+            ctx.moveTo(x + i, y + h);
+            ctx.lineTo(x + i + 70, y + h * 0.55);
+            ctx.stroke();
+          }
+
+          // Character silhouette artwork in bottom center of panel
+          const scx = x + w * 0.5;
+          const scy = y + h * 0.78;
+          ctx.fillStyle = '#1e293b';
+          ctx.beginPath();
+          ctx.arc(scx, scy - 45, 34, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.moveTo(scx - 62, y + h);
+          ctx.quadraticCurveTo(scx, scy - 10, scx + 62, y + h);
+          ctx.fill();
+
+          ctx.restore();
+          ctx.lineWidth = 4;
+          ctx.strokeStyle = '#0f172a';
+          ctx.strokeRect(x, y, w, h);
+        }
+
+        if (pageNumber === 1) {
+          // Top panel
+          drawPanel(36, 36, 688, 470, 14);
+
+          // Top-right rectangular narration box
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = '#0f172a';
+          ctx.lineWidth = 3.5;
+          ctx.fillRect(560, 62, 138, 250);
+          ctx.strokeRect(560, 62, 138, 250);
+          drawVerticalJapaneseLines(ctx, ['第一話', '静かな放課後'], 654, 84, 24, 38, 30);
+
+          // Top-left speech balloon
+          drawSpeechOval(ctx, 215, 200, 148, 138);
+          drawVerticalJapaneseLines(ctx, ['本当にこの', '古い地図が', '読めるのか？'], 278, 102, 24, 42, 31);
+
+          // Bottom-right panel
+          drawPanel(388, 532, 336, 490, 16);
+          drawSpeechOval(ctx, 556, 675, 136, 122);
+          drawVerticalJapaneseLines(ctx, ['当たり前よ！', '昨日調べたの'], 602, 586, 23, 42, 30);
+
+          // Bottom-left panel
+          drawPanel(36, 532, 332, 490, 15);
+          drawSpeechOval(ctx, 202, 682, 136, 126);
+          drawVerticalJapaneseLines(ctx, ['駅の裏にある', '神社へ行こう'], 246, 590, 23, 42, 30);
+        } else {
+          // Page 2: Two wide dramatic panels
+          drawPanel(36, 36, 688, 480, 15);
+          drawSpeechOval(ctx, 555, 195, 138, 128);
+          drawVerticalJapaneseLines(ctx, ['階段の上に', '誰かいるぞ！'], 598, 108, 24, 44, 31);
+
+          drawSpeechOval(ctx, 205, 225, 142, 132);
+          drawVerticalJapaneseLines(ctx, ['こんな時間に', '珍しいわね…'], 250, 132, 24, 44, 31);
+
+          drawPanel(36, 542, 688, 480, 14);
+          // Bottom-right narration box
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = '#0f172a';
+          ctx.lineWidth = 3.5;
+          ctx.fillRect(520, 572, 174, 256);
+          ctx.strokeRect(520, 572, 174, 256);
+          drawVerticalJapaneseLines(ctx, ['冷たい風が', '静かに吹いた'], 636, 598, 24, 44, 31);
+
+          // Bottom-left bubble
+          drawSpeechOval(ctx, 225, 705, 150, 132);
+          drawVerticalJapaneseLines(ctx, ['急ごう！答えは', 'あそこにある'], 272, 608, 23, 44, 30);
+        }
+
+        return { url: cvs.toDataURL('image/png'), width: W, height: H };
+      }
+
+      async function loadBuiltInSamples() {
+        if (state.isExtracting) return;
+        if (document.fonts && document.fonts.ready) {
+          await Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 1500))]);
+        }
+        revokeAllPages();
+        const s1 = createMangaSampleDataUrl(1);
+        const s2 = createMangaSampleDataUrl(2);
+
+        state.pages = [
+          {
+            id: 'sample_p1',
+            name: 'sample_chapter_01.png',
+            relativePath: 'sample_manga/sample_chapter_01.png',
+            url: s1.url,
+            isObjectUrl: false,
+            width: s1.width,
+            height: s1.height,
+            status: 'pending',
+            blocks: [],
+            fullText: ''
+          },
+          {
+            id: 'sample_p2',
+            name: 'sample_chapter_02.png',
+            relativePath: 'sample_manga/sample_chapter_02.png',
+            url: s2.url,
+            isObjectUrl: false,
+            width: s2.width,
+            height: s2.height,
+            status: 'pending',
+            blocks: [],
+            fullText: ''
+          }
+        ];
+
+        // Pre-detect bubble outlines on sample pages so user immediately sees speech-bubble targeting
+        for (const p of state.pages) {
+          const im = await loadImageElement(p.url);
+          p.blocks = sortBlocksByReadingOrder(detectSpeechBubblesHeuristic(im), state.readingOrder);
+        }
+
+        state.isSampleSet = true;
+        state.selectedPageId = state.pages[0].id;
+        state.selectedBlockId = state.pages[0].blocks[0] ? state.pages[0].blocks[0].id : null;
+        renderAll();
+      }
+
+      // -----------------------------------------------------------------------
+      // Rendering Functions
+      // -----------------------------------------------------------------------
+      function getSelectedPage() {
+        return state.pages.find((p) => p.id === state.selectedPageId) || null;
+      }
+
+      function renderAll() {
+        renderPageList();
+        renderActivePageStage();
+        renderRightPanel();
+      }
+
+      function renderPageList() {
+        const count = state.pages.length;
+        el.pagesSummaryCount.textContent = count + (count === 1 ? ' page loaded' : ' pages loaded');
+        el.extractAllLabel.textContent = count > 0
+          ? 'Extract All Japanese Text (' + count + ')'
+          : 'Extract All Japanese Text';
+        el.btnExtractAll.disabled = state.isExtracting || count === 0;
+        el.sampleNoticeBanner.classList.toggle('hidden', !state.isSampleSet || count === 0);
+
+        el.pageListContainer.innerHTML = '';
+        if (count === 0) {
+          const emptyMsg = document.createElement('p');
+          emptyMsg.className = 'text-xs text-slate-400 text-center py-6 px-2';
+          emptyMsg.textContent = 'No manga pages queued yet.';
+          el.pageListContainer.appendChild(emptyMsg);
+          return;
+        }
+
+        state.pages.forEach((page, idx) => {
+          const isSelected = page.id === state.selectedPageId;
+          const card = document.createElement('div');
+          card.className =
+            'group flex items-center gap-2.5 p-2 rounded-lg border cursor-pointer transition ' +
+            (isSelected
+              ? 'border-indigo-500 bg-indigo-50/70 shadow-sm'
+              : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50');
+
+          const thumb = document.createElement('img');
+          thumb.src = page.url;
+          thumb.alt = page.name;
+          thumb.className = 'w-10 h-14 object-cover rounded border border-slate-200 bg-slate-100 shrink-0';
+
+          const meta = document.createElement('div');
+          meta.className = 'min-w-0 flex-1';
+
+          const titleRow = document.createElement('div');
+          titleRow.className = 'flex items-center justify-between gap-1';
+          const numSpan = document.createElement('span');
+          numSpan.className = 'text-[11px] font-bold text-slate-500';
+          numSpan.textContent = '#' + (idx + 1);
+
+          const statusBadge = document.createElement('span');
+          if (page.status === 'done') {
+            statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800';
+            statusBadge.textContent = 'Extracted';
+          } else if (page.status === 'detecting' || page.status === 'recognizing') {
+            statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 animate-pulse';
+            statusBadge.textContent = 'OCR…';
+          } else {
+            statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600';
+            statusBadge.textContent = page.blocks.length > 0 ? page.blocks.length + ' boxes' : 'Ready';
+          }
+          titleRow.appendChild(numSpan);
+          titleRow.appendChild(statusBadge);
+
+          const nameP = document.createElement('p');
+          nameP.className = 'text-xs font-medium text-slate-800 truncate mt-0.5';
+          nameP.textContent = page.name;
+
+          const previewP = document.createElement('p');
+          previewP.className = 'jp-text text-[11px] text-slate-500 truncate mt-0.5';
+          previewP.textContent = page.fullText
+            ? page.fullText.replace(/\n+/g, ' ')
+            : 'Click Extract to read Japanese';
+
+          meta.appendChild(titleRow);
+          meta.appendChild(nameP);
+          meta.appendChild(previewP);
+
+          const delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.title = 'Remove page';
+          delBtn.className = 'opacity-0 group-hover:opacity-100 p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition shrink-0';
+          delBtn.innerHTML = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>';
+          delBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (state.isExtracting) return;
+            if (page.isObjectUrl && page.url) {
+              try { URL.revokeObjectURL(page.url); } catch (_e) { /* ignore */ }
+            }
+            state.pages = state.pages.filter((p) => p.id !== page.id);
+            if (state.selectedPageId === page.id) {
+              state.selectedPageId = state.pages[0] ? state.pages[0].id : null;
+              state.selectedBlockId = null;
+            }
+            renderAll();
+          });
+
+          card.appendChild(thumb);
+          card.appendChild(meta);
+          card.appendChild(delBtn);
+          card.addEventListener('click', () => {
+            state.selectedPageId = page.id;
+            state.selectedBlockId = page.blocks[0] ? page.blocks[0].id : null;
+            renderPageList();
+            renderActivePageStage();
+            renderRightPanel();
+          });
+
+          el.pageListContainer.appendChild(card);
+        });
+      }
+
+      function renderActivePageStage() {
+        const page = getSelectedPage();
+        const idx = page ? state.pages.findIndex((p) => p.id === page.id) : -1;
+        el.btnPrevPage.disabled = idx <= 0;
+        el.btnNextPage.disabled = idx < 0 || idx >= state.pages.length - 1;
+        el.btnExtractPage.disabled = state.isExtracting || !page;
+        el.btnRedetectPage.disabled = state.isExtracting || !page;
+
+        if (!page) {
+          el.activePageTitle.textContent = 'No page selected';
+          el.emptyViewerState.classList.remove('hidden');
+          el.stageImageWrapper.classList.add('hidden');
+          return;
+        }
+
+        el.emptyViewerState.classList.add('hidden');
+        el.stageImageWrapper.classList.remove('hidden');
+        el.activePageTitle.textContent = (idx + 1) + '/' + state.pages.length + ' · ' + page.name;
+        el.activePageImage.src = page.url;
+
+        applyStageZoom(page);
+        renderOverlayBoxes();
+      }
+
+      function applyStageZoom(page) {
+        if (!page) return;
+        if (state.fitMode) {
+          el.activePageImage.style.width = '';
+          el.activePageImage.style.maxHeight = 'calc(100vh - 235px)';
+        } else {
+          const targetW = Math.round(page.width * state.zoom);
+          el.activePageImage.style.maxHeight = 'none';
+          el.activePageImage.style.width = targetW + 'px';
+        }
+      }
+
+      function renderOverlayBoxes() {
+        el.bboxOverlayLayer.innerHTML = '';
+        const page = getSelectedPage();
+        if (!page || !state.showBoxes || !page.width || !page.height) return;
+
+        (page.blocks || []).forEach((blk, idx) => {
+          const div = document.createElement('div');
+          div.className = 'bbox-rect' + (blk.id === state.selectedBlockId ? ' active' : '');
+          div.style.left = ((blk.x1 / page.width) * 100).toFixed(3) + '%';
+          div.style.top = ((blk.y1 / page.height) * 100).toFixed(3) + '%';
+          div.style.width = (((blk.x2 - blk.x1) / page.width) * 100).toFixed(3) + '%';
+          div.style.height = (((blk.y2 - blk.y1) / page.height) * 100).toFixed(3) + '%';
+          div.title = blk.text ? '#' + (idx + 1) + ': ' + blk.text : 'Bubble #' + (idx + 1) + ' (click to inspect)';
+
+          const badge = document.createElement('span');
+          badge.className = 'bbox-badge';
+          badge.textContent = String(idx + 1);
+          div.appendChild(badge);
+
+          div.addEventListener('click', (ev) => {
+            if (state.drawMode) return;
+            ev.stopPropagation();
+            state.selectedBlockId = blk.id;
+            renderOverlayBoxes();
+            if (state.activeTab !== 'bubbles') {
+              setActiveTab('bubbles');
+            } else {
+              renderRightPanel();
+            }
+            const cardEl = el.panelPageBubbles.querySelector('[data-block-card="' + blk.id + '"]');
+            if (cardEl) cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          });
+
+          el.bboxOverlayLayer.appendChild(div);
+        });
+      }
+
+      function buildCombinedMangaTranscript() {
+        const chunks = [];
+        state.pages.forEach((page, idx) => {
+          const lines = (page.blocks || [])
+            .map((b) => (b.text || '').trim())
+            .filter((t) => t.length > 0);
+          if (lines.length === 0) return;
+          if (state.includeHeaders) {
+            chunks.push('=== Page ' + (idx + 1) + ' (' + page.name + ') ===\n' + lines.join('\n'));
+          } else {
+            chunks.push(lines.join('\n'));
+          }
+        });
+        return chunks.join('\n\n');
+      }
+
+      function renderRightPanel() {
+        const page = getSelectedPage();
+        const bubbleCount = page && page.blocks ? page.blocks.length : 0;
+        el.currentBubbleCountBadge.textContent = String(bubbleCount);
+
+        const combined = buildCombinedMangaTranscript();
+        el.fullMangaTextarea.value = combined;
+        el.fullMangaTextarea.style.fontSize = state.jpFontSize + 'px';
+
+        const rawCharCount = state.pages.reduce((acc, p) => {
+          return acc + (p.blocks || []).reduce((s, b) => s + ((b.text || '').trim().length), 0);
+        }, 0);
+        el.totalCharsStat.textContent = rawCharCount.toLocaleString() + ' JP chars';
+
+        // Render Current Page Bubble Cards
+        el.panelPageBubbles.innerHTML = '';
+        if (!page) {
+          const p = document.createElement('p');
+          p.className = 'text-xs text-slate-400 text-center py-8';
+          p.textContent = 'Select or upload a manga page to inspect speech bubbles.';
+          el.panelPageBubbles.appendChild(p);
+          return;
+        }
+
+        if (!page.blocks || page.blocks.length === 0) {
+          const wrap = document.createElement('div');
+          wrap.className = 'text-center py-8 px-4 space-y-2';
+          const msg = document.createElement('p');
+          msg.className = 'text-xs text-slate-500';
+          msg.textContent = 'No speech bubbles detected yet on this page. Click "Extract Current Page" or "+ Draw Box".';
+          wrap.appendChild(msg);
+          el.panelPageBubbles.appendChild(wrap);
+          return;
+        }
+
+        page.blocks.forEach((blk, idx) => {
+          const isSelected = blk.id === state.selectedBlockId;
+          const card = document.createElement('div');
+          card.setAttribute('data-block-card', blk.id);
+          card.className =
+            'rounded-xl border p-2.5 transition ' +
+            (isSelected
+              ? 'border-rose-400 bg-rose-50/40 shadow-sm'
+              : 'border-slate-200 bg-slate-50/50 hover:border-slate-300');
+
+          const header = document.createElement('div');
+          header.className = 'flex items-center justify-between gap-2 mb-1.5';
+
+          const leftBadge = document.createElement('div');
+          leftBadge.className = 'flex items-center gap-1.5 cursor-pointer';
+          const pill = document.createElement('span');
+          pill.className =
+            'inline-flex items-center justify-center min-w-[22px] h-5 px-1.5 rounded-full text-[11px] font-bold text-white ' +
+            (isSelected ? 'bg-rose-600' : 'bg-indigo-600');
+          pill.textContent = '#' + (idx + 1);
+
+          const confSpan = document.createElement('span');
+          confSpan.className = 'text-[11px] text-slate-500';
+          if (typeof blk.charConf === 'number' && blk.charConf > 0) {
+            confSpan.textContent = Math.round(blk.charConf * 100) + '% OCR conf';
+          } else {
+            confSpan.textContent = (blk.x2 - blk.x1) + '×' + (blk.y2 - blk.y1) + ' px';
+          }
+          leftBadge.appendChild(pill);
+          leftBadge.appendChild(confSpan);
+          leftBadge.addEventListener('click', () => {
+            state.selectedBlockId = blk.id;
+            renderOverlayBoxes();
+            renderRightPanel();
+          });
+
+          const actions = document.createElement('div');
+          actions.className = 'flex items-center gap-1';
+
+          const btnReOcr = document.createElement('button');
+          btnReOcr.type = 'button';
+          btnReOcr.className = 'px-2 py-0.5 rounded text-[11px] font-medium bg-white border border-slate-200 text-slate-700 hover:bg-indigo-50 hover:text-indigo-700';
+          btnReOcr.textContent = 'OCR';
+          btnReOcr.title = 'Run OCR on just this speech bubble';
+          btnReOcr.addEventListener('click', async () => {
+            if (state.isExtracting) return;
+            try {
+              state.abortRequested = false;
+              setExtractingUI(true);
+              setProgress(true, 'Recognizing bubble #' + (idx + 1) + '…', 45);
+              const im = await loadImageElement(page.url);
+              const res = await recognizeSingleBlock(im, blk);
+              blk.text = res.text;
+              blk.charConf = res.charConf;
+              page.status = 'done';
+              updatePageFullText(page);
+              setProgress(false);
+              showToast('Updated bubble #' + (idx + 1));
+            } catch (err) {
+              setProgress(false);
+              if (!err || err.message !== 'ABORTED') {
+                showToast('Bubble OCR failed: ' + (err ? err.message : ''), 'error');
+              }
+            } finally {
+              setExtractingUI(false);
+              renderAll();
+            }
+          });
+
+          const btnCopy = document.createElement('button');
+          btnCopy.type = 'button';
+          btnCopy.className = 'px-2 py-0.5 rounded text-[11px] font-medium bg-white border border-slate-200 text-slate-700 hover:bg-slate-100';
+          btnCopy.textContent = 'Copy';
+          btnCopy.addEventListener('click', () => copyTextSafe(blk.text, 'Copied bubble #' + (idx + 1) + '!'));
+
+          const btnDel = document.createElement('button');
+          btnDel.type = 'button';
+          btnDel.className = 'px-1.5 py-0.5 rounded text-[11px] font-medium text-slate-400 hover:text-rose-600 hover:bg-rose-50';
+          btnDel.textContent = '✕';
+          btnDel.title = 'Remove bounding box';
+          btnDel.addEventListener('click', () => {
+            if (state.isExtracting) return;
+            page.blocks = page.blocks.filter((b) => b.id !== blk.id);
+            updatePageFullText(page);
+            if (state.selectedBlockId === blk.id) state.selectedBlockId = null;
+            renderAll();
+          });
+
+          actions.appendChild(btnReOcr);
+          actions.appendChild(btnCopy);
+          actions.appendChild(btnDel);
+
+          header.appendChild(leftBadge);
+          header.appendChild(actions);
+
+          const ta = document.createElement('textarea');
+          ta.rows = 2;
+          ta.placeholder = 'Click Extract to transcribe this bubble…';
+          ta.value = blk.text || '';
+          ta.style.fontSize = state.jpFontSize + 'px';
+          ta.className = 'jp-text w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y';
+          ta.addEventListener('focus', () => {
+            if (state.selectedBlockId !== blk.id) {
+              state.selectedBlockId = blk.id;
+              renderOverlayBoxes();
+            }
+          });
+          ta.addEventListener('input', () => {
+            blk.text = ta.value;
+            updatePageFullText(page);
+            el.fullMangaTextarea.value = buildCombinedMangaTranscript();
+          });
+
+          card.appendChild(header);
+          card.appendChild(ta);
+          el.panelPageBubbles.appendChild(card);
+        });
+      }
+
+      function setActiveTab(tab) {
+        state.activeTab = tab;
+        if (tab === 'all') {
+          el.tabBtnAllText.className = 'px-2.5 py-1.5 rounded-md bg-white text-slate-900 shadow-sm transition';
+          el.tabBtnPageBubbles.className = 'px-2.5 py-1.5 rounded-md text-slate-600 hover:text-slate-900 transition';
+          el.panelAllText.classList.remove('hidden');
+          el.panelPageBubbles.classList.add('hidden');
+        } else {
+          el.tabBtnPageBubbles.className = 'px-2.5 py-1.5 rounded-md bg-white text-slate-900 shadow-sm transition';
+          el.tabBtnAllText.className = 'px-2.5 py-1.5 rounded-md text-slate-600 hover:text-slate-900 transition';
+          el.panelPageBubbles.classList.remove('hidden');
+          el.panelAllText.classList.add('hidden');
+        }
+        renderRightPanel();
+      }
+
+      // -----------------------------------------------------------------------
+      // Interactive Manual Box Drawing on Manga Page Stage
+      // -----------------------------------------------------------------------
+      let dragStart = null;
+
+      function setDrawMode(enabled) {
+        state.drawMode = enabled;
+        el.drawModeBanner.classList.toggle('hidden', !enabled);
+        el.stageImageWrapper.style.cursor = enabled ? 'crosshair' : 'default';
+        if (enabled) {
+          el.btnDrawBoxMode.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold border border-rose-500 bg-rose-600 text-white transition';
+          if (!state.showBoxes) {
+            state.showBoxes = true;
+            el.btnToggleBoxes.textContent = 'Boxes: On';
+            renderOverlayBoxes();
+          }
+        } else {
+          el.btnDrawBoxMode.className = 'px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 transition';
+          el.rubberBandBox.classList.add('hidden');
+          dragStart = null;
+        }
+      }
+
+      function stagePointerCoords(clientX, clientY) {
+        const rect = el.stageImageWrapper.getBoundingClientRect();
+        const rx = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+        const ry = Math.max(0, Math.min(1, (clientY - rect.top) / Math.max(1, rect.height)));
+        return { rx, ry };
+      }
+
+      el.stageImageWrapper.addEventListener('pointerdown', (ev) => {
+        if (!state.drawMode || state.isExtracting) return;
+        const page = getSelectedPage();
+        if (!page) return;
+        ev.preventDefault();
+        el.stageImageWrapper.setPointerCapture(ev.pointerId);
+        dragStart = stagePointerCoords(ev.clientX, ev.clientY);
+        el.rubberBandBox.style.left = (dragStart.rx * 100) + '%';
+        el.rubberBandBox.style.top = (dragStart.ry * 100) + '%';
+        el.rubberBandBox.style.width = '0%';
+        el.rubberBandBox.style.height = '0%';
+        el.rubberBandBox.classList.remove('hidden');
+      });
+
+      el.stageImageWrapper.addEventListener('pointermove', (ev) => {
+        if (!dragStart || !state.drawMode) return;
+        const cur = stagePointerCoords(ev.clientX, ev.clientY);
+        const left = Math.min(dragStart.rx, cur.rx);
+        const top = Math.min(dragStart.ry, cur.ry);
+        const w = Math.abs(cur.rx - dragStart.rx);
+        const h = Math.abs(cur.ry - dragStart.ry);
+        el.rubberBandBox.style.left = (left * 100) + '%';
+        el.rubberBandBox.style.top = (top * 100) + '%';
+        el.rubberBandBox.style.width = (w * 100) + '%';
+        el.rubberBandBox.style.height = (h * 100) + '%';
+      });
+
+      el.stageImageWrapper.addEventListener('pointerup', async (ev) => {
+        if (!dragStart || !state.drawMode) return;
+        const cur = stagePointerCoords(ev.clientX, ev.clientY);
+        const start = dragStart;
+        dragStart = null;
+        el.rubberBandBox.classList.add('hidden');
+
+        const page = getSelectedPage();
+        if (!page) return;
+
+        const x1 = Math.round(Math.min(start.rx, cur.rx) * page.width);
+        const y1 = Math.round(Math.min(start.ry, cur.ry) * page.height);
+        const x2 = Math.round(Math.max(start.rx, cur.rx) * page.width);
+        const y2 = Math.round(Math.max(start.ry, cur.ry) * page.height);
+        if (x2 - x1 < 10 || y2 - y1 < 10) return;
+
+        const newBlk = {
+          id: 'blk_' + Math.random().toString(36).slice(2, 9),
+          x1,
+          y1,
+          x2,
+          y2,
+          conf: 1.0,
+          text: '',
+          charConf: null
+        };
+        page.blocks.push(newBlk);
+        page.blocks = sortBlocksByReadingOrder(page.blocks, state.readingOrder);
+        state.selectedBlockId = newBlk.id;
+        setActiveTab('bubbles');
+        renderAll();
+
+        // Automatically run OCR on the newly drawn bubble
+        try {
+          state.abortRequested = false;
+          setExtractingUI(true);
+          setProgress(true, 'Recognizing custom drawn speech bubble…', 50);
+          const im = await loadImageElement(page.url);
+          const target = page.blocks.find((b) => b.id === newBlk.id);
+          if (target) {
+            const res = await recognizeSingleBlock(im, target);
+            target.text = res.text;
+            target.charConf = res.charConf;
+            page.status = 'done';
+            updatePageFullText(page);
+          }
+          setProgress(false);
+          showToast('Extracted custom bubble!');
+        } catch (err) {
+          setProgress(false);
+          if (!err || err.message !== 'ABORTED') {
+            showToast('Custom box OCR error: ' + (err ? err.message : ''), 'error');
+          }
+        } finally {
+          setExtractingUI(false);
+          renderAll();
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // Downloads (.TXT and Mokuro-style .JSON)
+      // -----------------------------------------------------------------------
+      function triggerBlobDownload(filename, mime, content) {
+        const blob = new Blob([content], { type: mime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      // -----------------------------------------------------------------------
+      // Wire All Event Listeners
+      // -----------------------------------------------------------------------
+      el.btnUploadFolder.addEventListener('click', () => el.folderInput.click());
+      el.btnEmptyUploadFolder.addEventListener('click', () => el.folderInput.click());
+      el.btnUploadFiles.addEventListener('click', () => el.filesInput.click());
+      el.btnEmptyUploadFiles.addEventListener('click', () => el.filesInput.click());
+      el.sidebarDropTarget.addEventListener('click', () => el.filesInput.click());
+
+      el.folderInput.addEventListener('change', async (e) => {
+        if (e.target.files && e.target.files.length > 0) {
+          await ingestFileList(e.target.files);
+          e.target.value = '';
+        }
+      });
+
+      el.filesInput.addEventListener('change', async (e) => {
+        if (e.target.files && e.target.files.length > 0) {
+          await ingestFileList(e.target.files);
+          e.target.value = '';
+        }
+      });
+
+      el.btnLoadSamples.addEventListener('click', () => loadBuiltInSamples());
+      el.btnEmptyLoadSamples.addEventListener('click', () => loadBuiltInSamples());
+
+      el.btnClearPages.addEventListener('click', () => {
+        if (state.isExtracting) return;
+        revokeAllPages();
+        state.pages = [];
+        state.selectedPageId = null;
+        state.selectedBlockId = null;
+        state.isSampleSet = false;
+        renderAll();
+      });
+
+      // Drag and drop across entire workspace
+      let dragDepth = 0;
+      window.addEventListener('dragenter', (ev) => {
+        ev.preventDefault();
+        dragDepth++;
+        el.dragOverlay.classList.remove('hidden');
+      });
+      window.addEventListener('dragover', (ev) => {
+        ev.preventDefault();
+      });
+      window.addEventListener('dragleave', (ev) => {
+        ev.preventDefault();
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) el.dragOverlay.classList.add('hidden');
+      });
+      window.addEventListener('drop', async (ev) => {
+        ev.preventDefault();
+        dragDepth = 0;
+        el.dragOverlay.classList.add('hidden');
+        if (state.isExtracting || !ev.dataTransfer) return;
+        const files = await collectDroppedFiles(ev.dataTransfer);
+        await ingestFileList(files);
+      });
+
+      // Dropdown Controls
+      el.selectDetector.addEventListener('change', () => {
+        state.detectorMode = el.selectDetector.value;
+      });
+      el.selectOcrEngine.addEventListener('change', () => {
+        state.ocrEngine = el.selectOcrEngine.value;
+      });
+      el.selectReadingOrder.addEventListener('change', () => {
+        state.readingOrder = el.selectReadingOrder.value;
+        for (const p of state.pages) {
+          if (p.blocks && p.blocks.length > 0) {
+            p.blocks = sortBlocksByReadingOrder(p.blocks, state.readingOrder);
+            updatePageFullText(p);
+          }
+        }
+        renderOverlayBoxes();
+        renderRightPanel();
+      });
+
+      // Extract & Stop Buttons
+      el.btnExtractAll.addEventListener('click', () => {
+        extractPagesQueue(state.pages);
+      });
+      el.btnExtractPage.addEventListener('click', () => {
+        const p = getSelectedPage();
+        if (p) extractPagesQueue([p]);
+      });
+      el.btnStopExtract.addEventListener('click', () => {
+        state.abortRequested = true;
+      });
+
+      // Page Navigation & Stage Controls
+      el.btnPrevPage.addEventListener('click', () => {
+        const idx = state.pages.findIndex((p) => p.id === state.selectedPageId);
+        if (idx > 0) {
+          state.selectedPageId = state.pages[idx - 1].id;
+          state.selectedBlockId = null;
+          renderAll();
+        }
+      });
+      el.btnNextPage.addEventListener('click', () => {
+        const idx = state.pages.findIndex((p) => p.id === state.selectedPageId);
+        if (idx >= 0 && idx < state.pages.length - 1) {
+          state.selectedPageId = state.pages[idx + 1].id;
+          state.selectedBlockId = null;
+          renderAll();
+        }
+      });
+
+      el.btnToggleBoxes.addEventListener('click', () => {
+        state.showBoxes = !state.showBoxes;
+        el.btnToggleBoxes.textContent = state.showBoxes ? 'Boxes: On' : 'Boxes: Off';
+        renderOverlayBoxes();
+      });
+
+      el.btnDrawBoxMode.addEventListener('click', () => setDrawMode(!state.drawMode));
+      el.btnExitDrawMode.addEventListener('click', () => setDrawMode(false));
+
+      el.btnRedetectPage.addEventListener('click', async () => {
+        const page = getSelectedPage();
+        if (!page || state.isExtracting) return;
+        try {
+          state.abortRequested = false;
+          setExtractingUI(true);
+          setProgress(true, 'Detecting speech bubbles on ' + page.name + '…', 35);
+          const im = await loadImageElement(page.url);
+          page.blocks = await detectBlocksForPage(im);
+          page.status = 'pending';
+          updatePageFullText(page);
+          setProgress(false);
+          showToast('Detected ' + page.blocks.length + ' text region(s) on page.');
+        } catch (err) {
+          setProgress(false);
+          if (!err || err.message !== 'ABORTED') {
+            showToast('Detection failed: ' + (err ? err.message : ''), 'error');
+          }
+        } finally {
+          setExtractingUI(false);
+          renderAll();
+        }
+      });
+
+      el.btnZoomIn.addEventListener('click', () => {
+        state.fitMode = false;
+        state.zoom = Math.min(2.5, +(state.zoom + 0.2).toFixed(2));
+        applyStageZoom(getSelectedPage());
+      });
+      el.btnZoomOut.addEventListener('click', () => {
+        state.fitMode = false;
+        state.zoom = Math.max(0.3, +(state.zoom - 0.2).toFixed(2));
+        applyStageZoom(getSelectedPage());
+      });
+      el.btnZoomFit.addEventListener('click', () => {
+        state.fitMode = true;
+        state.zoom = 1.0;
+        applyStageZoom(getSelectedPage());
+      });
+
+      // Right Panel Tabs & Export Actions
+      el.tabBtnAllText.addEventListener('click', () => setActiveTab('all'));
+      el.tabBtnPageBubbles.addEventListener('click', () => setActiveTab('bubbles'));
+
+      el.chkIncludeHeaders.addEventListener('change', () => {
+        state.includeHeaders = el.chkIncludeHeaders.checked;
+        el.fullMangaTextarea.value = buildCombinedMangaTranscript();
+      });
+
+      el.btnFontSmaller.addEventListener('click', () => {
+        state.jpFontSize = Math.max(12, state.jpFontSize - 2);
+        renderRightPanel();
+      });
+      el.btnFontLarger.addEventListener('click', () => {
+        state.jpFontSize = Math.min(28, state.jpFontSize + 2);
+        renderRightPanel();
+      });
+
+      el.btnCopyAllText.addEventListener('click', () => {
+        copyTextSafe(buildCombinedMangaTranscript(), 'Copied full Japanese manga script!');
+      });
+
+      el.btnDownloadTxt.addEventListener('click', () => {
+        const txt = buildCombinedMangaTranscript();
+        if (!txt) {
+          showToast('Extract Japanese text first before downloading .txt.', 'warn');
+          return;
+        }
+        triggerBlobDownload('manga_japanese_extracted.txt', 'text/plain;charset=utf-8', txt);
+        showToast('Downloaded manga_japanese_extracted.txt');
+      });
+
+      el.btnDownloadJson.addEventListener('click', () => {
+        if (state.pages.length === 0) {
+          showToast('No manga pages loaded to export.', 'warn');
+          return;
+        }
+        const payload = {
+          version: '0.2.5-mokuro-web',
+          ocr_engine: state.ocrEngine,
+          detector: state.detectorMode,
+          reading_order: state.readingOrder,
+          pages: state.pages.map((p, idx) => ({
+            page_index: idx + 1,
+            img_path: p.relativePath || p.name,
+            img_width: p.width,
+            img_height: p.height,
+            blocks: (p.blocks || []).map((b, bIdx) => ({
+              order: bIdx + 1,
+              box: [b.x1, b.y1, b.x2, b.y2],
+              vertical: (b.y2 - b.y1) > (b.x2 - b.x1),
+              confidence: b.charConf,
+              lines: b.text ? [b.text] : []
+            }))
+          }))
+        };
+        triggerBlobDownload('manga_ocr_mokuro.json', 'application/json;charset=utf-8', JSON.stringify(payload, null, 2));
+        showToast('Downloaded manga_ocr_mokuro.json');
+      });
+
+      // Stack & CLI Modal
+      el.btnOpenStackModal.addEventListener('click', () => el.stackModal.classList.remove('hidden'));
+      el.btnCloseStackModal.addEventListener('click', () => el.stackModal.classList.add('hidden'));
+      el.btnCloseStackModalBottom.addEventListener('click', () => el.stackModal.classList.add('hidden'));
+      el.stackModal.addEventListener('click', (ev) => {
+        if (ev.target === el.stackModal) el.stackModal.classList.add('hidden');
+      });
+      el.btnCopyCliCmd.addEventListener('click', () => {
+        copyTextSafe(el.cliCommandBlock.textContent, 'Copied mokuro CLI commands!');
+      });
+
+      // Initialize with 2 sample manga pages ready to extract
+      loadBuiltInSamples();
+    })();
+  </script>
+</body>
+</html>
