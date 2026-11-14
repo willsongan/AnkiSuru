@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet" />
-  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/ort.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/ort.webgpu.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
   <style>
     :root {
@@ -171,7 +171,10 @@
           <div class="flex items-center gap-2 flex-wrap">
             <h1 class="text-base sm:text-lg font-bold tracking-tight text-slate-900 truncate">Mokuro Web Extractor</h1>
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
-              manga-ocr + comic-text-detector
+              manga-ocr + neural detector
+            </span>
+            <span id="accelStatusBadge" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200" title="All neural inference runs in a non-blocking background Web Worker with WebGPU acceleration when available">
+              Worker + WebGPU Ready
             </span>
           </div>
           <p class="text-xs text-slate-500 hidden sm:block truncate">
@@ -210,8 +213,9 @@
           <label class="flex items-center gap-1.5 text-slate-600 font-medium">
             <span class="whitespace-nowrap">Detector:</span>
             <select id="selectDetector" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500">
-              <option value="ctd-onnx">comic-text-detector ONNX (Neural · ~95 MB)</option>
-              <option value="bubble-heuristic" selected>Fast Manga Bubble Detector (Instant · 0 MB)</option>
+              <option value="rtdetr-int8" selected>comic-text-and-bubble INT8 (Neural Turbo · 11 MB)</option>
+              <option value="ctd-onnx">comic-text-detector ONNX (Mokuro · 95 MB · WebGPU)</option>
+              <option value="bubble-heuristic">Fast Bubble Heuristic (Instant · 0 MB)</option>
               <option value="whole-image">Whole Image (Pre-cropped Bubble/Panel)</option>
             </select>
           </label>
@@ -465,7 +469,12 @@
               <tr>
                 <td class="py-2 pr-3 font-semibold"><a href="https://github.com/kha-white/mokuro" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">kha-white/mokuro</a> + <a href="https://github.com/kha-white/manga-ocr" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">manga-ocr</a></td>
                 <td class="py-2 px-3 whitespace-nowrap">1.8k &amp; 2.8k ★ · GPL-3.0 / Apache-2.0</td>
-                <td class="py-2 pl-3"><strong>Chosen architecture.</strong> Highest Japanese bubble accuracy (vertical/horizontal + furigana) and runs directly in-browser via quantized ONNX (~117 MB).</td>
+                <td class="py-2 pl-3"><strong>Chosen OCR architecture.</strong> Highest Japanese bubble accuracy (vertical/horizontal + furigana), running in a non-blocking Web Worker (~117 MB q8 ONNX).</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-3 font-semibold"><a href="https://huggingface.co/ogkalu/comic-text-and-bubble-detector" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">ogkalu/comic-text-and-bubble-detector</a></td>
+                <td class="py-2 px-3 whitespace-nowrap">INT8 640px · Apache-2.0</td>
+                <td class="py-2 pl-3"><strong>Default Neural Turbo Detector (11.1 MB).</strong> 8.5× smaller than 95 MB <code>comic-text-detector</code> with zero NMS overhead; <code>comic-text-detector</code> is also WebGPU-accelerated with pruned UNet/DBNet heads.</td>
               </tr>
               <tr>
                 <td class="py-2 pr-3 font-semibold"><a href="https://github.com/zyddnys/manga-image-translator" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">zyddnys/manga-image-translator</a></td>
@@ -521,6 +530,8 @@ mokuro "/path/to/manga/volume_folder"</pre>
         mocrEncoder: 'https://huggingface.co/kimchireader/manga-ocr-onnx-q8/resolve/main/onnx/encoder_model_quantized.onnx',
         mocrDecoder: 'https://huggingface.co/kimchireader/manga-ocr-onnx-q8/resolve/main/onnx/decoder_model_merged_quantized.onnx',
         mocrVocab: 'https://huggingface.co/kha-white/manga-ocr-base/resolve/main/vocab.txt',
+        rtdetrInt8Primary: 'https://huggingface.co/ogkalu/comic-text-and-bubble-detector/resolve/main/detector-v4-s_int8.onnx',
+        rtdetrInt8Mirror: 'https://huggingface.co/Sundowner123/comic-text-and-bubble-detector/resolve/main/detector.onnx',
         ctdOnnx: 'https://huggingface.co/HighLiuk/japanese-onnx-models/resolve/main/comictextdetector.onnx'
       };
 
@@ -533,7 +544,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         selectedPageId: null,
         selectedBlockId: null,
         isSampleSet: false,
-        detectorMode: 'bubble-heuristic',
+        detectorMode: 'rtdetr-int8',
         ocrEngine: 'manga-ocr',
         readingOrder: 'rtl',
         showBoxes: true,
@@ -547,17 +558,23 @@ mokuro "/path/to/manga/volume_folder"</pre>
         abortRequested: false
       };
 
-      // Cached ML Runtimes
+      // Cached ML Runtimes & Off-Main-Thread Worker State
       const runtime = {
-        mocrEncoderSession: null,
-        mocrDecoderSession: null,
+        buffers: {},
         mocrVocab: null,
-        ctdSession: null,
+        aiWorker: null,
+        aiWorkerReady: null,
+        workerLoadedModels: { rtdetr: false, ctd: false, mocr: false },
+        workerReqSeq: 0,
+        workerPending: new Map(),
+        mainFallbackSessions: { rtdetr: null, ctd: null, mocrEnc: null, mocrDec: null },
+        hasWebGpu: false,
         tesseractWorker: null
       };
 
       // DOM Elements
       const el = {
+        accelStatusBadge: document.getElementById('accelStatusBadge'),
         folderInput: document.getElementById('folderInput'),
         filesInput: document.getElementById('filesInput'),
         btnUploadFolder: document.getElementById('btnUploadFolder'),
@@ -1142,23 +1159,589 @@ mokuro "/path/to/manga/volume_folder"</pre>
       }
 
       // -----------------------------------------------------------------------
-      // Detector 2: Neural comic-text-detector ONNX (dmMaze YOLOv5 1024x1024)
+      // Non-Blocking Background Web Worker (WebGPU + WASM SIMD) for Neural Models
+      // Eliminates main-thread UI freezes during page detection & OCR decoding
+      // -----------------------------------------------------------------------
+      const SHARED_WORKER_BODY = [
+        "let hasWebGpu = false;",
+        "let rtdetrSession = null;",
+        "let ctdSession = null;",
+        "let ctdSavedBuf = null;",
+        "let ctdEp = 'wasm';",
+        "let mocrEnc = null;",
+        "let mocrDec = null;",
+        "",
+        "async function probeGpu() {",
+        "  try {",
+        "    if (self.navigator && self.navigator.gpu) {",
+        "      const adapter = await self.navigator.gpu.requestAdapter();",
+        "      hasWebGpu = Boolean(adapter);",
+        "    }",
+        "  } catch (_e) { hasWebGpu = false; }",
+        "  return hasWebGpu;",
+        "}",
+        "",
+        "function parseRtdetrOutputs(session, outputs, origW, origH) {",
+        "  const labelsT = outputs.labels || outputs[session.outputNames[0]];",
+        "  const boxesT = outputs.boxes || outputs[session.outputNames[1]];",
+        "  const scoresT = outputs.scores || outputs[session.outputNames[2]];",
+        "  if (!labelsT || !boxesT || !scoresT) return [];",
+        "  const labels = labelsT.data;",
+        "  const boxes = boxesT.data;",
+        "  const scores = scoresT.data;",
+        "  const count = scores.length;",
+        "  const textBoxes = [];",
+        "  const bubbleFallback = [];",
+        "  const padPx = 3;",
+        "  for (let i = 0; i < count; i++) {",
+        "    const sc = Number(scores[i]);",
+        "    if (sc < 0.30) continue;",
+        "    const lbl = Number(labels[i]);",
+        "    const bOff = i * 4;",
+        "    const x1 = Math.max(0, Number(boxes[bOff]) - padPx);",
+        "    const y1 = Math.max(0, Number(boxes[bOff + 1]) - padPx);",
+        "    const x2 = Math.min(origW, Number(boxes[bOff + 2]) + padPx);",
+        "    const y2 = Math.min(origH, Number(boxes[bOff + 3]) + padPx);",
+        "    if (x2 - x1 < 8 || y2 - y1 < 8) continue;",
+        "    if (lbl === 1 || lbl === 2) {",
+        "      textBoxes.push({ x1, y1, x2, y2, conf: sc });",
+        "    } else if (lbl === 0 && sc >= 0.45) {",
+        "      bubbleFallback.push({ x1, y1, x2, y2, conf: sc });",
+        "    }",
+        "  }",
+        "  return textBoxes.length > 0 ? textBoxes : bubbleFallback;",
+        "}",
+        "",
+        "function parseCtdYoloBoxes(blkTensor, S, ratio, origW, origH) {",
+        "  if (!blkTensor) return [];",
+        "  const numPreds = blkTensor.dims[1];",
+        "  const stride = blkTensor.dims[2];",
+        "  const data = blkTensor.data;",
+        "  let maxCoord = 0;",
+        "  for (let i = 0; i < Math.min(numPreds, 500); i++) {",
+        "    const v = data[i * stride + 2];",
+        "    if (v > maxCoord) maxCoord = v;",
+        "  }",
+        "  const coordMul = maxCoord <= 2.0 ? S : 1.0;",
+        "  const candidates = [];",
+        "  const padPx = 4;",
+        "  for (let i = 0; i < numPreds; i++) {",
+        "    const base = i * stride;",
+        "    const obj = data[base + 4];",
+        "    if (obj < 0.35) continue;",
+        "    let maxCls = 1.0;",
+        "    if (stride > 5) {",
+        "      maxCls = 0;",
+        "      for (let c = 5; c < stride; c++) {",
+        "        if (data[base + c] > maxCls) maxCls = data[base + c];",
+        "      }",
+        "    }",
+        "    const score = obj * maxCls;",
+        "    if (score < 0.35) continue;",
+        "    const cx = data[base] * coordMul;",
+        "    const cy = data[base + 1] * coordMul;",
+        "    const bw = data[base + 2] * coordMul;",
+        "    const bh = data[base + 3] * coordMul;",
+        "    const x1 = Math.max(0, (cx - bw * 0.5) / ratio - padPx);",
+        "    const y1 = Math.max(0, (cy - bh * 0.5) / ratio - padPx);",
+        "    const x2 = Math.min(origW, (cx + bw * 0.5) / ratio + padPx);",
+        "    const y2 = Math.min(origH, (cy + bh * 0.5) / ratio + padPx);",
+        "    if (x2 - x1 >= 8 && y2 - y1 >= 8) {",
+        "      candidates.push({ x1, y1, x2, y2, conf: score });",
+        "    }",
+        "  }",
+        "  candidates.sort((a, b) => b.conf - a.conf);",
+        "  const kept = [];",
+        "  for (const cand of candidates) {",
+        "    let suppressed = false;",
+        "    for (const k of kept) {",
+        "      const ix1 = Math.max(cand.x1, k.x1);",
+        "      const iy1 = Math.max(cand.y1, k.y1);",
+        "      const ix2 = Math.min(cand.x2, k.x2);",
+        "      const iy2 = Math.min(cand.y2, k.y2);",
+        "      const inter = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);",
+        "      if (inter > 0) {",
+        "        const areaA = (cand.x2 - cand.x1) * (cand.y2 - cand.y1);",
+        "        const areaB = (k.x2 - k.x1) * (k.y2 - k.y1);",
+        "        if (inter / (areaA + areaB - inter) > 0.35) { suppressed = true; break; }",
+        "      }",
+        "    }",
+        "    if (!suppressed) kept.push(cand);",
+        "  }",
+        "  return kept;",
+        "}",
+        "",
+        "self.onmessage = async (ev) => {",
+        "  const msg = ev.data || {};",
+        "  const reqId = msg.reqId;",
+        "  try {",
+        "    if (msg.type === 'ping') {",
+        "      const gpu = await probeGpu();",
+        "      self.postMessage({ reqId, ok: true, hasWebGpu: gpu });",
+        "      return;",
+        "    }",
+        "    if (msg.type === 'init_rtdetr') {",
+        "      if (!rtdetrSession) {",
+        "        // INT8 quantized graph executes fastest on SIMD WASM without GPU-CPU partition copies",
+        "        rtdetrSession = await ort.InferenceSession.create(msg.modelBuf, {",
+        "          executionProviders: ['wasm'],",
+        "          graphOptimizationLevel: 'all'",
+        "        });",
+        "      }",
+        "      self.postMessage({ reqId, ok: true });",
+        "      return;",
+        "    }",
+        "    if (msg.type === 'run_rtdetr') {",
+        "      const inputArr = new Float32Array(msg.inputBuf);",
+        "      const feeds = {};",
+        "      for (const name of rtdetrSession.inputNames) {",
+        "        if (name.toLowerCase().includes('size')) {",
+        "          feeds[name] = new ort.Tensor('int64', BigInt64Array.from([BigInt(msg.origW), BigInt(msg.origH)]), [1, 2]);",
+        "        } else {",
+        "          feeds[name] = new ort.Tensor('float32', inputArr, [1, 3, 640, 640]);",
+        "        }",
+        "      }",
+        "      const out = await rtdetrSession.run(feeds);",
+        "      const boxes = parseRtdetrOutputs(rtdetrSession, out, msg.origW, msg.origH);",
+        "      self.postMessage({ reqId, ok: true, boxes });",
+        "      return;",
+        "    }",
+        "    if (msg.type === 'init_ctd') {",
+        "      if (!ctdSession) {",
+        "        await probeGpu();",
+        "        if (hasWebGpu) {",
+        "          try {",
+        "            ctdSavedBuf = msg.modelBuf.slice(0);",
+        "            ctdSession = await ort.InferenceSession.create(msg.modelBuf, {",
+        "              executionProviders: ['webgpu', 'wasm'],",
+        "              graphOptimizationLevel: 'all'",
+        "            });",
+        "            ctdEp = 'webgpu';",
+        "          } catch (_gpuErr) {",
+        "            ctdSession = null;",
+        "          }",
+        "        }",
+        "        if (!ctdSession) {",
+        "          const fallbackBuf = ctdSavedBuf || msg.modelBuf;",
+        "          ctdSavedBuf = null;",
+        "          ctdSession = await ort.InferenceSession.create(fallbackBuf, {",
+        "            executionProviders: ['wasm'],",
+        "            graphOptimizationLevel: 'all'",
+        "          });",
+        "          ctdEp = 'wasm';",
+        "        }",
+        "      }",
+        "      self.postMessage({ reqId, ok: true, ep: ctdEp });",
+        "      return;",
+        "    }",
+        "    if (msg.type === 'run_ctd') {",
+        "      const S = msg.S;",
+        "      const inputArr = new Float32Array(msg.inputBuf);",
+        "      let outputs = null;",
+        "      let blkName = ctdSession.outputNames.find((n) => n === 'blk') || ctdSession.outputNames[0];",
+        "      try {",
+        "        const inName = ctdSession.inputNames[0];",
+        "        // Prune UNet (seg) and DBNet (det) heads by fetching ONLY the YOLOv5 blk output!",
+        "        outputs = await ctdSession.run(",
+        "          { [inName]: new ort.Tensor('float32', inputArr, [1, 3, S, S]) },",
+        "          [blkName]",
+        "        );",
+        "        ctdSavedBuf = null;",
+        "      } catch (runErr) {",
+        "        if (ctdEp === 'webgpu' && ctdSavedBuf) {",
+        "          ctdSession = await ort.InferenceSession.create(ctdSavedBuf, {",
+        "            executionProviders: ['wasm'],",
+        "            graphOptimizationLevel: 'all'",
+        "          });",
+        "          ctdSavedBuf = null;",
+        "          ctdEp = 'wasm';",
+        "          blkName = ctdSession.outputNames.find((n) => n === 'blk') || ctdSession.outputNames[0];",
+        "          const inName2 = ctdSession.inputNames[0];",
+        "          outputs = await ctdSession.run(",
+        "            { [inName2]: new ort.Tensor('float32', inputArr, [1, 3, S, S]) },",
+        "            [blkName]",
+        "          );",
+        "        } else {",
+        "          throw runErr;",
+        "        }",
+        "      }",
+        "      const blkTensor = outputs[blkName] || outputs[ctdSession.outputNames[0]];",
+        "      const boxes = parseCtdYoloBoxes(blkTensor, S, msg.ratio, msg.origW, msg.origH);",
+        "      self.postMessage({ reqId, ok: true, boxes, ep: ctdEp });",
+        "      return;",
+        "    }",
+        "    if (msg.type === 'init_mocr') {",
+        "      if (!mocrEnc) {",
+        "        mocrEnc = await ort.InferenceSession.create(msg.encBuf, {",
+        "          executionProviders: ['wasm'],",
+        "          graphOptimizationLevel: 'all'",
+        "        });",
+        "      }",
+        "      if (!mocrDec) {",
+        "        mocrDec = await ort.InferenceSession.create(msg.decBuf, {",
+        "          executionProviders: ['wasm'],",
+        "          graphOptimizationLevel: 'all'",
+        "        });",
+        "      }",
+        "      self.postMessage({ reqId, ok: true });",
+        "      return;",
+        "    }",
+        "    if (msg.type === 'run_mocr') {",
+        "      const pixelValues = new Float32Array(msg.inputBuf);",
+        "      const encIn = mocrEnc.inputNames[0];",
+        "      const encOut = await mocrEnc.run({ [encIn]: new ort.Tensor('float32', pixelValues, [1, 3, 224, 224]) });",
+        "      const hidden = encOut.last_hidden_state || encOut[mocrEnc.outputNames[0]];",
+        "      const ids = [2];",
+        "      const probs = [];",
+        "      for (let step = 0; step < 160; step++) {",
+        "        const feeds = {};",
+        "        for (const name of mocrDec.inputNames) {",
+        "          if (name === 'input_ids') {",
+        "            feeds[name] = new ort.Tensor('int64', BigInt64Array.from(ids, BigInt), [1, ids.length]);",
+        "          } else if (name === 'encoder_hidden_states') {",
+        "            feeds[name] = hidden;",
+        "          } else if (name === 'encoder_attention_mask') {",
+        "            const encSeq = hidden.dims[1] || 197;",
+        "            feeds[name] = new ort.Tensor('int64', new BigInt64Array(encSeq).fill(1n), [1, encSeq]);",
+        "          } else if (name === 'attention_mask') {",
+        "            feeds[name] = new ort.Tensor('int64', new BigInt64Array(ids.length).fill(1n), [1, ids.length]);",
+        "          } else if (name === 'use_cache_branch') {",
+        "            feeds[name] = new ort.Tensor('bool', [false], [1]);",
+        "          } else if (name.startsWith('past_key_values')) {",
+        "            feeds[name] = new ort.Tensor('float32', new Float32Array(0), [1, 12, 0, 64]);",
+        "          }",
+        "        }",
+        "        const decOut = await mocrDec.run(feeds);",
+        "        const logitsT = decOut.logits || decOut[mocrDec.outputNames[0]];",
+        "        const vocabSize = logitsT.dims[logitsT.dims.length - 1];",
+        "        const offset = (ids.length - 1) * vocabSize;",
+        "        const logits = logitsT.data;",
+        "        let bestId = 0;",
+        "        let bestLogit = -Infinity;",
+        "        for (let v = 0; v < vocabSize; v++) {",
+        "          const val = logits[offset + v];",
+        "          if (val > bestLogit) { bestLogit = val; bestId = v; }",
+        "        }",
+        "        let sumExp = 0;",
+        "        for (let v = 0; v < vocabSize; v++) sumExp += Math.exp(logits[offset + v] - bestLogit);",
+        "        const tokenProb = sumExp > 0 ? 1.0 / sumExp : 0;",
+        "        if (bestId === 3 || bestId === 0) break;",
+        "        ids.push(bestId);",
+        "        probs.push(tokenProb);",
+        "        if (ids.length >= 10) {",
+        "          const tail = ids.slice(-7);",
+        "          if (tail.every((t) => t === tail[0])) break;",
+        "        }",
+        "      }",
+        "      const avgConf = probs.length > 0 ? probs.reduce((a, b) => a + b, 0) / probs.length : 0;",
+        "      self.postMessage({ reqId, ok: true, ids, avgConf });",
+        "      return;",
+        "    }",
+        "    throw new Error('Unknown worker command: ' + msg.type);",
+        "  } catch (err) {",
+        "    self.postMessage({ reqId, ok: false, error: err ? (err.message || String(err)) : 'Worker error' });",
+        "  }",
+        "};"
+      ].join('\n');
+
+      function setupOrtEnvSnippet() {
+        return [
+          "ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/';",
+          "ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 2) : 1;",
+          "ort.env.wasm.proxy = false;"
+        ].join('\n');
+      }
+
+      function attachWorkerRouting(w) {
+        w.onmessage = (ev) => {
+          const data = ev.data || {};
+          const entry = runtime.workerPending.get(data.reqId);
+          if (!entry) return;
+          runtime.workerPending.delete(data.reqId);
+          if (data.ok) entry.resolve(data);
+          else entry.reject(new Error(data.error || 'Worker inference error'));
+        };
+        w.onerror = (err) => {
+          for (const [, entry] of runtime.workerPending) {
+            entry.reject(new Error(err && err.message ? err.message : 'Background Worker crashed'));
+          }
+          runtime.workerPending.clear();
+        };
+      }
+
+      function callWorker(payload, transfers, timeoutMs) {
+        return new Promise((resolve, reject) => {
+          if (!runtime.aiWorker) {
+            reject(new Error('No background worker'));
+            return;
+          }
+          const reqId = ++runtime.workerReqSeq;
+          const timer = timeoutMs
+            ? setTimeout(() => {
+                runtime.workerPending.delete(reqId);
+                reject(new Error('Worker init timed out'));
+              }, timeoutMs)
+            : null;
+
+          runtime.workerPending.set(reqId, {
+            resolve: (val) => {
+              if (timer) clearTimeout(timer);
+              resolve(val);
+            },
+            reject: (err) => {
+              if (timer) clearTimeout(timer);
+              reject(err);
+            }
+          });
+          runtime.aiWorker.postMessage({ ...payload, reqId }, transfers || []);
+        });
+      }
+
+      function terminateAiWorkerForStop() {
+        if (runtime.aiWorker) {
+          try { runtime.aiWorker.terminate(); } catch (_e) { /* ignore */ }
+          runtime.aiWorker = null;
+          runtime.aiWorkerReady = null;
+          runtime.workerLoadedModels = { rtdetr: false, ctd: false, mocr: false };
+        }
+        for (const [, entry] of runtime.workerPending) {
+          entry.reject(new Error('ABORTED'));
+        }
+        runtime.workerPending.clear();
+      }
+
+      async function ensureAiWorker() {
+        if (runtime.aiWorker && runtime.aiWorkerReady) {
+          return runtime.aiWorkerReady;
+        }
+        runtime.aiWorkerReady = (async () => {
+          // Tier 1: ES Module Worker with WebGPU + WASM SIMD
+          try {
+            const modCode = [
+              "import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/esm/ort.webgpu.min.mjs';",
+              setupOrtEnvSnippet(),
+              SHARED_WORKER_BODY
+            ].join('\n');
+            const blobUrl = URL.createObjectURL(new Blob([modCode], { type: 'text/javascript' }));
+            const w = new Worker(blobUrl, { type: 'module' });
+            attachWorkerRouting(w);
+            runtime.aiWorker = w;
+            const pong = await callWorker({ type: 'ping' }, [], 3500);
+            URL.revokeObjectURL(blobUrl);
+            runtime.hasWebGpu = Boolean(pong.hasWebGpu);
+            if (el.accelStatusBadge) {
+              el.accelStatusBadge.textContent = runtime.hasWebGpu
+                ? 'WebGPU + Worker Active'
+                : 'Background Worker Active';
+            }
+            return true;
+          } catch (_modErr) {
+            if (runtime.aiWorker) {
+              try { runtime.aiWorker.terminate(); } catch (_e) { /* ignore */ }
+              runtime.aiWorker = null;
+            }
+          }
+
+          // Tier 2: Classic Worker with WASM SIMD
+          try {
+            const classicCode = [
+              "importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/ort.min.js');",
+              setupOrtEnvSnippet(),
+              SHARED_WORKER_BODY
+            ].join('\n');
+            const blobUrl = URL.createObjectURL(new Blob([classicCode], { type: 'application/javascript' }));
+            const w = new Worker(blobUrl);
+            attachWorkerRouting(w);
+            runtime.aiWorker = w;
+            await callWorker({ type: 'ping' }, [], 3500);
+            URL.revokeObjectURL(blobUrl);
+            runtime.hasWebGpu = false;
+            if (el.accelStatusBadge) {
+              el.accelStatusBadge.textContent = 'Background Worker Active';
+            }
+            return true;
+          } catch (_classicErr) {
+            if (runtime.aiWorker) {
+              try { runtime.aiWorker.terminate(); } catch (_e) { /* ignore */ }
+              runtime.aiWorker = null;
+            }
+            runtime.aiWorkerReady = null;
+            if (el.accelStatusBadge) {
+              el.accelStatusBadge.textContent = 'Main-Thread Fallback';
+            }
+            return false;
+          }
+        })();
+        return runtime.aiWorkerReady;
+      }
+
+      async function getCachedBufferInMemory(cacheKey, primaryUrl, fallbackUrl, label, basePct, spanPct) {
+        if (runtime.buffers[cacheKey] && runtime.buffers[cacheKey].byteLength > 1024) {
+          return runtime.buffers[cacheKey];
+        }
+        try {
+          const buf = await fetchWithProgressCached(cacheKey, primaryUrl, label, basePct, spanPct);
+          runtime.buffers[cacheKey] = buf;
+          return buf;
+        } catch (err) {
+          if (err && err.message === 'ABORTED') throw err;
+          if (!fallbackUrl) throw err;
+          const buf = await fetchWithProgressCached(cacheKey, fallbackUrl, label, basePct, spanPct);
+          runtime.buffers[cacheKey] = buf;
+          return buf;
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // Detector 2A: Neural Turbo comic-text-and-bubble INT8 (11.1 MB, 640x640)
+      // -----------------------------------------------------------------------
+      async function ensureRtdetrReady() {
+        const buf = await getCachedBufferInMemory(
+          'ogkalu_det_v4s_int8_v1',
+          MODEL_URLS.rtdetrInt8Primary,
+          MODEL_URLS.rtdetrInt8Mirror,
+          'Neural Turbo Detector (11.1 MB)',
+          2,
+          28
+        );
+        const workerOk = await ensureAiWorker();
+        if (workerOk) {
+          if (!runtime.workerLoadedModels.rtdetr) {
+            setProgress(true, 'Compiling Neural Turbo Detector in background worker…', 32);
+            const copyBuf = buf.slice(0);
+            await callWorker({ type: 'init_rtdetr', modelBuf: copyBuf }, [copyBuf]);
+            runtime.workerLoadedModels.rtdetr = true;
+          }
+          return 'worker';
+        }
+        if (!runtime.mainFallbackSessions.rtdetr) {
+          setProgress(true, 'Compiling Neural Turbo Detector…', 32);
+          runtime.mainFallbackSessions.rtdetr = await window.ort.InferenceSession.create(buf.slice(0), {
+            executionProviders: ['wasm']
+          });
+        }
+        return 'main';
+      }
+
+      async function detectComicTextRtdetrInt8(imgEl) {
+        const origW = imgEl.naturalWidth || imgEl.width;
+        const origH = imgEl.naturalHeight || imgEl.height;
+        const mode = await ensureRtdetrReady();
+
+        const S = 640;
+        const cvs = document.createElement('canvas');
+        cvs.width = S;
+        cvs.height = S;
+        const ctx = cvs.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(imgEl, 0, 0, S, S);
+        const rgba = ctx.getImageData(0, 0, S, S).data;
+
+        const plane = S * S;
+        const input = new Float32Array(3 * plane);
+        for (let i = 0; i < plane; i++) {
+          const p = i * 4;
+          input[i] = rgba[p] / 255.0;
+          input[plane + i] = rgba[p + 1] / 255.0;
+          input[2 * plane + i] = rgba[p + 2] / 255.0;
+        }
+
+        let rawBoxes = [];
+        if (mode === 'worker') {
+          const res = await callWorker(
+            { type: 'run_rtdetr', inputBuf: input.buffer, origW, origH },
+            [input.buffer]
+          );
+          rawBoxes = res.boxes || [];
+        } else {
+          await new Promise((r) => requestAnimationFrame(r));
+          const sess = runtime.mainFallbackSessions.rtdetr;
+          const feeds = {};
+          for (const name of sess.inputNames) {
+            if (name.toLowerCase().includes('size')) {
+              feeds[name] = new window.ort.Tensor('int64', BigInt64Array.from([BigInt(origW), BigInt(origH)]), [1, 2]);
+            } else {
+              feeds[name] = new window.ort.Tensor('float32', input, [1, 3, S, S]);
+            }
+          }
+          const out = await sess.run(feeds);
+          const labels = (out.labels || out[sess.outputNames[0]]).data;
+          const boxes = (out.boxes || out[sess.outputNames[1]]).data;
+          const scores = (out.scores || out[sess.outputNames[2]]).data;
+          for (let i = 0; i < scores.length; i++) {
+            const sc = Number(scores[i]);
+            const lbl = Number(labels[i]);
+            if (sc >= 0.30 && (lbl === 1 || lbl === 2)) {
+              const bOff = i * 4;
+              const x1 = Math.max(0, Number(boxes[bOff]) - 3);
+              const y1 = Math.max(0, Number(boxes[bOff + 1]) - 3);
+              const x2 = Math.min(origW, Number(boxes[bOff + 2]) + 3);
+              const y2 = Math.min(origH, Number(boxes[bOff + 3]) + 3);
+              if (x2 - x1 >= 8 && y2 - y1 >= 8) rawBoxes.push({ x1, y1, x2, y2, conf: sc });
+            }
+          }
+        }
+
+        const merged = mergeNestedBoxes(rawBoxes);
+        if (merged.length === 0) {
+          return detectSpeechBubblesHeuristic(imgEl);
+        }
+
+        return merged.map((b) => ({
+          id: 'blk_' + Math.random().toString(36).slice(2, 9),
+          x1: Math.round(b.x1),
+          y1: Math.round(b.y1),
+          x2: Math.round(b.x2),
+          y2: Math.round(b.y2),
+          conf: b.conf,
+          text: '',
+          charConf: null
+        }));
+      }
+
+      // -----------------------------------------------------------------------
+      // Detector 2B: Neural comic-text-detector ONNX (WebGPU + Pruned blk Head + Worker)
       // -----------------------------------------------------------------------
       async function ensureCtdSession() {
-        if (runtime.ctdSession) return runtime.ctdSession;
-        if (!window.ort) throw new Error('ONNX Runtime Web failed to load.');
-        const buf = await fetchWithProgressCached('ctd_onnx_v1', MODEL_URLS.ctdOnnx, 'comic-text-detector ONNX', 2, 28);
-        setProgress(true, 'Compiling comic-text-detector WebAssembly graph…', 32);
-        runtime.ctdSession = await window.ort.InferenceSession.create(buf, {
-          executionProviders: ['wasm']
-        });
-        return runtime.ctdSession;
+        const buf = await getCachedBufferInMemory(
+          'ctd_onnx_v1',
+          MODEL_URLS.ctdOnnx,
+          null,
+          'comic-text-detector ONNX (95 MB)',
+          2,
+          28
+        );
+        const workerOk = await ensureAiWorker();
+        if (workerOk) {
+          if (!runtime.workerLoadedModels.ctd) {
+            setProgress(true, 'Compiling comic-text-detector (WebGPU / Worker)…', 32);
+            const copyBuf = buf.slice(0);
+            const res = await callWorker({ type: 'init_ctd', modelBuf: copyBuf }, [copyBuf]);
+            runtime.workerLoadedModels.ctd = true;
+            if (el.accelStatusBadge && res.ep === 'webgpu') {
+              el.accelStatusBadge.textContent = 'WebGPU + Worker Active';
+            }
+          }
+          return 'worker';
+        }
+        if (!runtime.mainFallbackSessions.ctd) {
+          setProgress(true, 'Compiling comic-text-detector…', 32);
+          try {
+            runtime.mainFallbackSessions.ctd = await window.ort.InferenceSession.create(buf.slice(0), {
+              executionProviders: ['webgpu', 'wasm']
+            });
+          } catch (_e) {
+            runtime.mainFallbackSessions.ctd = await window.ort.InferenceSession.create(buf.slice(0), {
+              executionProviders: ['wasm']
+            });
+          }
+        }
+        return 'main';
       }
 
       async function detectComicTextOnnx(imgEl) {
         const origW = imgEl.naturalWidth || imgEl.width;
         const origH = imgEl.naturalHeight || imgEl.height;
-        const session = await ensureCtdSession();
+        const mode = await ensureCtdSession();
 
         const S = 1024;
         const ratio = Math.min(S / origW, S / origH);
@@ -1183,89 +1766,47 @@ mokuro "/path/to/manga/volume_folder"</pre>
           input[2 * plane + i] = rgba[p + 2] / 255.0;
         }
 
-        const inName = session.inputNames[0];
-        const outputs = await session.run({
-          [inName]: new window.ort.Tensor('float32', input, [1, 3, S, S])
-        });
-
-        let blkTensor = outputs.blk || null;
-        if (!blkTensor) {
-          for (const name of session.outputNames) {
-            const t = outputs[name];
-            if (t && t.dims && t.dims.length === 3 && t.dims[2] >= 5 && t.dims[2] <= 16) {
-              blkTensor = t;
-              break;
+        let kept = [];
+        if (mode === 'worker') {
+          const res = await callWorker(
+            { type: 'run_ctd', inputBuf: input.buffer, S, ratio, origW, origH },
+            [input.buffer]
+          );
+          kept = res.boxes || [];
+        } else {
+          await new Promise((r) => requestAnimationFrame(r));
+          const session = runtime.mainFallbackSessions.ctd;
+          const inName = session.inputNames[0];
+          const blkName = session.outputNames.find((n) => n === 'blk') || session.outputNames[0];
+          const outputs = await session.run(
+            { [inName]: new window.ort.Tensor('float32', input, [1, 3, S, S]) },
+            [blkName]
+          );
+          const blkTensor = outputs[blkName] || outputs[session.outputNames[0]];
+          if (blkTensor) {
+            const numPreds = blkTensor.dims[1];
+            const stride = blkTensor.dims[2];
+            const data = blkTensor.data;
+            for (let i = 0; i < numPreds; i++) {
+              const base = i * stride;
+              const obj = data[base + 4];
+              if (obj < 0.35) continue;
+              const maxCls = stride > 5 ? Math.max(data[base + 5], data[base + 6] || 0) : 1.0;
+              const score = obj * maxCls;
+              if (score < 0.35) continue;
+              const cx = data[base];
+              const cy = data[base + 1];
+              const bw = data[base + 2];
+              const bh = data[base + 3];
+              kept.push({
+                x1: Math.max(0, (cx - bw * 0.5) / ratio - 4),
+                y1: Math.max(0, (cy - bh * 0.5) / ratio - 4),
+                x2: Math.min(origW, (cx + bw * 0.5) / ratio + 4),
+                y2: Math.min(origH, (cy + bh * 0.5) / ratio + 4),
+                conf: score
+              });
             }
           }
-        }
-        if (!blkTensor) {
-          return detectSpeechBubblesHeuristic(imgEl);
-        }
-
-        const numPreds = blkTensor.dims[1];
-        const stride = blkTensor.dims[2];
-        const data = blkTensor.data;
-        const candidates = [];
-
-        // Detect normalized vs pixel coords
-        let maxCoord = 0;
-        for (let i = 0; i < Math.min(numPreds, 500); i++) {
-          const v = data[i * stride + 2];
-          if (v > maxCoord) maxCoord = v;
-        }
-        const coordMul = maxCoord <= 2.0 ? S : 1.0;
-
-        for (let i = 0; i < numPreds; i++) {
-          const base = i * stride;
-          const obj = data[base + 4];
-          if (obj < 0.35) continue;
-          let maxCls = 1.0;
-          if (stride > 5) {
-            maxCls = 0;
-            for (let c = 5; c < stride; c++) {
-              if (data[base + c] > maxCls) maxCls = data[base + c];
-            }
-          }
-          const score = obj * maxCls;
-          if (score < 0.35) continue;
-
-          const cx = data[base] * coordMul;
-          const cy = data[base + 1] * coordMul;
-          const bw = data[base + 2] * coordMul;
-          const bh = data[base + 3] * coordMul;
-
-          const padPx = 4;
-          const x1 = Math.max(0, (cx - bw * 0.5) / ratio - padPx);
-          const y1 = Math.max(0, (cy - bh * 0.5) / ratio - padPx);
-          const x2 = Math.min(origW, (cx + bw * 0.5) / ratio + padPx);
-          const y2 = Math.min(origH, (cy + bh * 0.5) / ratio + padPx);
-          if (x2 - x1 >= 8 && y2 - y1 >= 8) {
-            candidates.push({ x1, y1, x2, y2, conf: score });
-          }
-        }
-
-        // YOLOv5 NMS (iouThresh = 0.35)
-        candidates.sort((a, b) => b.conf - a.conf);
-        const kept = [];
-        for (const cand of candidates) {
-          let suppressed = false;
-          for (const k of kept) {
-            const ix1 = Math.max(cand.x1, k.x1);
-            const iy1 = Math.max(cand.y1, k.y1);
-            const ix2 = Math.min(cand.x2, k.x2);
-            const iy2 = Math.min(cand.y2, k.y2);
-            const inter = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);
-            if (inter > 0) {
-              const areaA = (cand.x2 - cand.x1) * (cand.y2 - cand.y1);
-              const areaB = (k.x2 - k.x1) * (k.y2 - k.y1);
-              const iou = inter / (areaA + areaB - inter);
-              if (iou > 0.35) {
-                suppressed = true;
-                break;
-              }
-            }
-          }
-          if (!suppressed) kept.push(cand);
         }
 
         const merged = mergeNestedBoxes(kept);
@@ -1301,12 +1842,20 @@ mokuro "/path/to/manga/volume_folder"</pre>
             text: '',
             charConf: null
           }];
+        } else if (state.detectorMode === 'rtdetr-int8') {
+          try {
+            blocks = await detectComicTextRtdetrInt8(imgEl);
+          } catch (err) {
+            if (err && err.message === 'ABORTED') throw err;
+            showToast('Neural Turbo detector unavailable (' + err.message + '); using Fast Bubble Heuristic.', 'warn');
+            blocks = detectSpeechBubblesHeuristic(imgEl);
+          }
         } else if (state.detectorMode === 'ctd-onnx') {
           try {
             blocks = await detectComicTextOnnx(imgEl);
           } catch (err) {
             if (err && err.message === 'ABORTED') throw err;
-            showToast('Neural detector unavailable (' + err.message + '); switched to Fast Bubble Detector.', 'warn');
+            showToast('comic-text-detector unavailable (' + err.message + '); using Fast Bubble Heuristic.', 'warn');
             blocks = detectSpeechBubblesHeuristic(imgEl);
           }
         } else {
@@ -1317,14 +1866,9 @@ mokuro "/path/to/manga/volume_folder"</pre>
       }
 
       // -----------------------------------------------------------------------
-      // OCR Engine 1: kha-white/manga-ocr ONNX (VisionEncoderDecoder DeiT + BERT)
+      // OCR Engine 1: kha-white/manga-ocr ONNX (Off-Main-Thread Worker Execution)
       // -----------------------------------------------------------------------
       async function ensureMangaOcrReady() {
-        if (runtime.mocrEncoderSession && runtime.mocrDecoderSession && runtime.mocrVocab) {
-          return;
-        }
-        if (!window.ort) throw new Error('ONNX Runtime Web is not available.');
-
         if (!runtime.mocrVocab) {
           const cachedVocab = await idbGet('mocr_vocab_v1');
           if (cachedVocab && Array.isArray(cachedVocab) && cachedVocab.length > 1000) {
@@ -1339,46 +1883,72 @@ mokuro "/path/to/manga/volume_folder"</pre>
           }
         }
 
-        if (!runtime.mocrEncoderSession) {
-          const encBuf = await fetchWithProgressCached(
-            'mocr_enc_q8_v1',
-            MODEL_URLS.mocrEncoder,
-            'manga-ocr ViT Encoder (87 MB)',
-            10,
-            50
-          );
-          setProgress(true, 'Initializing manga-ocr Vision Encoder…', 62);
-          runtime.mocrEncoderSession = await window.ort.InferenceSession.create(encBuf, {
-            executionProviders: ['wasm']
-          });
+        const encBuf = await getCachedBufferInMemory(
+          'mocr_enc_q8_v1',
+          MODEL_URLS.mocrEncoder,
+          null,
+          'manga-ocr ViT Encoder (87 MB)',
+          10,
+          50
+        );
+        const decBuf = await getCachedBufferInMemory(
+          'mocr_dec_q8_v1',
+          MODEL_URLS.mocrDecoder,
+          null,
+          'manga-ocr Japanese Decoder (30 MB)',
+          62,
+          28
+        );
+
+        const workerOk = await ensureAiWorker();
+        if (workerOk) {
+          if (!runtime.workerLoadedModels.mocr) {
+            setProgress(true, 'Initializing manga-ocr in background worker…', 92);
+            const encCopy = encBuf.slice(0);
+            const decCopy = decBuf.slice(0);
+            await callWorker({ type: 'init_mocr', encBuf: encCopy, decBuf: decCopy }, [encCopy, decCopy]);
+            runtime.workerLoadedModels.mocr = true;
+          }
+          return 'worker';
         }
 
-        if (!runtime.mocrDecoderSession) {
-          const decBuf = await fetchWithProgressCached(
-            'mocr_dec_q8_v1',
-            MODEL_URLS.mocrDecoder,
-            'manga-ocr Japanese Decoder (30 MB)',
-            65,
-            25
-          );
-          setProgress(true, 'Initializing manga-ocr Japanese Char-BERT Decoder…', 92);
-          runtime.mocrDecoderSession = await window.ort.InferenceSession.create(decBuf, {
+        if (!runtime.mainFallbackSessions.mocrEnc) {
+          setProgress(true, 'Initializing manga-ocr Vision Encoder…', 90);
+          runtime.mainFallbackSessions.mocrEnc = await window.ort.InferenceSession.create(encBuf.slice(0), {
             executionProviders: ['wasm']
           });
         }
+        if (!runtime.mainFallbackSessions.mocrDec) {
+          setProgress(true, 'Initializing manga-ocr Decoder…', 95);
+          runtime.mainFallbackSessions.mocrDec = await window.ort.InferenceSession.create(decBuf.slice(0), {
+            executionProviders: ['wasm']
+          });
+        }
+        return 'main';
       }
 
       function postProcessMangaOcrText(rawStr) {
         if (!rawStr) return '';
         let s = rawStr.replace(/\s+/g, '');
         s = s.replace(/\.{2,}/g, '…').replace(/．{2,}/g, '…');
-        // Convert ASCII ! and ? to full-width manga punctuation
         s = s.replace(/!/g, '！').replace(/\?/g, '？');
         return s.trim();
       }
 
+      function decodeTokenIdsToJapanese(ids) {
+        const special = new Set(['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]', '']);
+        const chars = [];
+        for (let i = 1; i < ids.length; i++) {
+          let tok = runtime.mocrVocab[ids[i]] || '';
+          if (special.has(tok)) continue;
+          if (tok.startsWith('##')) tok = tok.slice(2);
+          chars.push(tok);
+        }
+        return postProcessMangaOcrText(chars.join(''));
+      }
+
       async function recognizeCropMangaOcr(imgEl, box) {
-        await ensureMangaOcrReady();
+        const mode = await ensureMangaOcrReady();
 
         const S = 224;
         const cropW = Math.max(1, box.x2 - box.x1);
@@ -1398,7 +1968,6 @@ mokuro "/path/to/manga/volume_folder"</pre>
         const plane = S * S;
         const pixelValues = new Float32Array(3 * plane);
 
-        // Exact kha-white/manga-ocr preprocessing: PIL grayscale -> 3ch RGB -> (x/255 - 0.5)/0.5
         for (let i = 0; i < plane; i++) {
           const p = i * 4;
           const gray = Math.round(0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2]);
@@ -1408,23 +1977,28 @@ mokuro "/path/to/manga/volume_folder"</pre>
           pixelValues[2 * plane + i] = norm;
         }
 
-        const encInName = runtime.mocrEncoderSession.inputNames[0];
-        const encOut = await runtime.mocrEncoderSession.run({
-          [encInName]: new window.ort.Tensor('float32', pixelValues, [1, 3, S, S])
-        });
-        const hidden = encOut.last_hidden_state || encOut[runtime.mocrEncoderSession.outputNames[0]];
+        if (mode === 'worker') {
+          const res = await callWorker({ type: 'run_mocr', inputBuf: pixelValues.buffer }, [pixelValues.buffer]);
+          return {
+            text: decodeTokenIdsToJapanese(res.ids || []),
+            charConf: res.avgConf || 0
+          };
+        }
 
-        // Greedy decoding starting from [CLS] (id = 2) until [SEP] (id = 3)
+        // Main-thread fallback with frame yields
+        const encSess = runtime.mainFallbackSessions.mocrEnc;
+        const decSess = runtime.mainFallbackSessions.mocrDec;
+        const encOut = await encSess.run({
+          [encSess.inputNames[0]]: new window.ort.Tensor('float32', pixelValues, [1, 3, S, S])
+        });
+        const hidden = encOut.last_hidden_state || encOut[encSess.outputNames[0]];
         const ids = [2];
         const probs = [];
-        const maxSteps = 160;
-        const decSession = runtime.mocrDecoderSession;
-
-        for (let step = 0; step < maxSteps; step++) {
+        for (let step = 0; step < 160; step++) {
           if (state.abortRequested) throw new Error('ABORTED');
-
+          if (step % 6 === 0) await new Promise((r) => requestAnimationFrame(r));
           const feeds = {};
-          for (const name of decSession.inputNames) {
+          for (const name of decSess.inputNames) {
             if (name === 'input_ids') {
               feeds[name] = new window.ort.Tensor('int64', BigInt64Array.from(ids, BigInt), [1, ids.length]);
             } else if (name === 'encoder_hidden_states') {
@@ -1440,58 +2014,25 @@ mokuro "/path/to/manga/volume_folder"</pre>
               feeds[name] = new window.ort.Tensor('float32', new Float32Array(0), [1, 12, 0, 64]);
             }
           }
-
-          const decOut = await decSession.run(feeds);
-          const logitsTensor = decOut.logits || decOut[decSession.outputNames[0]];
-          const vocabSize = logitsTensor.dims[logitsTensor.dims.length - 1];
+          const decOut = await decSess.run(feeds);
+          const logitsT = decOut.logits || decOut[decSess.outputNames[0]];
+          const vocabSize = logitsT.dims[logitsT.dims.length - 1];
           const offset = (ids.length - 1) * vocabSize;
-          const logits = logitsTensor.data;
-
+          const logits = logitsT.data;
           let bestId = 0;
           let bestLogit = -Infinity;
           for (let v = 0; v < vocabSize; v++) {
             const val = logits[offset + v];
-            if (val > bestLogit) {
-              bestLogit = val;
-              bestId = v;
-            }
+            if (val > bestLogit) { bestLogit = val; bestId = v; }
           }
-
-          // Compute softmax confidence of chosen token
           let sumExp = 0;
-          for (let v = 0; v < vocabSize; v++) {
-            sumExp += Math.exp(logits[offset + v] - bestLogit);
-          }
-          const tokenProb = sumExp > 0 ? 1.0 / sumExp : 0;
-
-          if (bestId === 3 || bestId === 0) break; // [SEP] or [PAD]
+          for (let v = 0; v < vocabSize; v++) sumExp += Math.exp(logits[offset + v] - bestLogit);
+          if (bestId === 3 || bestId === 0) break;
           ids.push(bestId);
-          probs.push(tokenProb);
-
-          // Guard against degenerate repetition loops on empty noise crops
-          if (ids.length >= 10) {
-            const tail = ids.slice(-7);
-            if (tail.every((t) => t === tail[0])) break;
-          }
+          probs.push(sumExp > 0 ? 1.0 / sumExp : 0);
         }
-
-        const special = new Set(['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]', '']);
-        const chars = [];
-        for (let i = 1; i < ids.length; i++) {
-          let tok = runtime.mocrVocab[ids[i]] || '';
-          if (special.has(tok)) continue;
-          if (tok.startsWith('##')) tok = tok.slice(2);
-          chars.push(tok);
-        }
-
-        const avgConf = probs.length > 0
-          ? probs.reduce((a, b) => a + b, 0) / probs.length
-          : 0;
-
-        return {
-          text: postProcessMangaOcrText(chars.join('')),
-          charConf: avgConf
-        };
+        const avgConf = probs.length > 0 ? probs.reduce((a, b) => a + b, 0) / probs.length : 0;
+        return { text: decodeTokenIdsToJapanese(ids), charConf: avgConf };
       }
 
       // -----------------------------------------------------------------------
@@ -1586,12 +2127,19 @@ mokuro "/path/to/manga/volume_folder"</pre>
           } else {
             await ensureTesseractReady();
           }
-          if (state.detectorMode === 'ctd-onnx') {
+          if (state.detectorMode === 'rtdetr-int8') {
+            try {
+              await ensureRtdetrReady();
+            } catch (detErr) {
+              if (detErr && detErr.message === 'ABORTED') throw detErr;
+              showToast('Falling back to Fast Bubble Heuristic: ' + detErr.message, 'warn');
+            }
+          } else if (state.detectorMode === 'ctd-onnx') {
             try {
               await ensureCtdSession();
             } catch (detErr) {
               if (detErr && detErr.message === 'ABORTED') throw detErr;
-              showToast('Falling back to Fast Bubble Detector: ' + detErr.message, 'warn');
+              showToast('Falling back to Fast Bubble Heuristic: ' + detErr.message, 'warn');
             }
           }
 
@@ -3167,6 +3715,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
       });
       el.btnStopExtract.addEventListener('click', () => {
         state.abortRequested = true;
+        terminateAiWorkerForStop();
       });
 
       // Page Navigation & Stage Controls
@@ -3202,16 +3751,20 @@ mokuro "/path/to/manga/volume_folder"</pre>
         try {
           state.abortRequested = false;
           setExtractingUI(true);
-          setProgress(true, 'Detecting speech bubbles on ' + page.name + '…', 35);
+          setProgress(true, 'Detecting speech bubbles on ' + page.name + ' (background worker)…', 35);
+          const t0 = performance.now();
           const im = await loadImageElement(page.url);
           page.blocks = await detectBlocksForPage(im);
+          const elapsedSec = ((performance.now() - t0) / 1000).toFixed(2);
           page.status = 'pending';
           updatePageFullText(page);
           setProgress(false);
-          showToast('Detected ' + page.blocks.length + ' text region(s) on page.');
+          showToast('Detected ' + page.blocks.length + ' text region(s) in ' + elapsedSec + 's.');
         } catch (err) {
           setProgress(false);
-          if (!err || err.message !== 'ABORTED') {
+          if (err && err.message === 'ABORTED') {
+            showToast('Detection stopped.', 'warn');
+          } else {
             showToast('Detection failed: ' + (err ? err.message : ''), 'error');
           }
         } finally {
@@ -3307,7 +3860,8 @@ mokuro "/path/to/manga/volume_folder"</pre>
         copyTextSafe(el.cliCommandBlock.textContent, 'Copied mokuro CLI commands!');
       });
 
-      // Initialize with 2 sample manga pages ready to extract
+      // Initialize background worker probe & 2 sample manga pages ready to extract
+      ensureAiWorker();
       loadBuiltInSamples();
     })();
   </script>
