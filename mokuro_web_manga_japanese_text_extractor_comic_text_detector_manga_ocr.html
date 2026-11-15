@@ -152,64 +152,87 @@
     .custom-scroll::-webkit-scrollbar-thumb:hover {
       background: #94a3b8;
     }
+    .title-banner-collapsible {
+      max-height: 72px;
+      opacity: 1;
+      overflow: hidden;
+      transition: max-height 0.55s cubic-bezier(0.4, 0, 0.2, 1),
+                  opacity 0.45s ease,
+                  padding 0.55s cubic-bezier(0.4, 0, 0.2, 1),
+                  border-width 0.55s ease;
+    }
+    .title-banner-collapsible.is-collapsed {
+      max-height: 0 !important;
+      opacity: 0 !important;
+      padding-top: 0 !important;
+      padding-bottom: 0 !important;
+      border-bottom-width: 0 !important;
+      pointer-events: none;
+    }
   </style>
 </head>
-<body class="min-h-screen flex flex-col bg-slate-50 text-slate-900">
+<body class="min-h-screen lg:h-screen flex flex-col bg-slate-50 text-slate-900 lg:overflow-hidden">
 
   <!-- Hidden File Inputs -->
   <input id="folderInput" type="file" webkitdirectory directory multiple accept="image/*" class="hidden" />
   <input id="filesInput" type="file" multiple accept="image/*" class="hidden" />
 
-  <!-- Top Header -->
-  <header class="bg-white border-b border-slate-200 sticky top-0 z-30">
-    <div class="max-w-[1600px] mx-auto px-3 sm:px-5 py-2.5 flex flex-wrap items-center justify-between gap-2.5">
-      <div class="flex items-center gap-2.5 min-w-0">
-        <div class="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-black text-base shadow-sm shrink-0 jp-text">
+  <!-- Top Header (Intro Title Bar Auto-Hides After 3.5s; Settings Collapse Unless Prompted) -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shrink-0 relative">
+    <!-- Auto-Hiding Intro Banner -->
+    <div id="titleBanner" class="title-banner-collapsible border-b border-slate-100 px-3 sm:px-4 py-2 flex items-center justify-between gap-2 bg-white">
+      <div class="flex items-center gap-2 min-w-0">
+        <div class="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-black text-sm shadow-sm shrink-0 jp-text">
           漫
         </div>
-        <div class="min-w-0">
-          <div class="flex items-center gap-2 flex-wrap">
-            <h1 class="text-base sm:text-lg font-bold tracking-tight text-slate-900 truncate">Mokuro Web Extractor</h1>
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
-              manga-ocr + neural detector
+        <h1 class="text-sm sm:text-base font-bold tracking-tight text-slate-900 truncate">Mokuro Web Extractor</h1>
+        <span class="hidden sm:inline text-xs text-slate-400">· In-browser Japanese Manga OCR</span>
+      </div>
+      <span id="accelStatusBadge" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
+        Worker + WebGPU Ready
+      </span>
+    </div>
+
+    <!-- Slim Action Strip -->
+    <div class="bg-slate-50/90 px-2.5 sm:px-4 py-1.5">
+      <div class="w-full flex flex-wrap items-center justify-between gap-2">
+        <!-- Prompted Settings Trigger -->
+        <div class="flex items-center gap-2">
+          <button id="btnToggleSettings" type="button" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 border border-slate-300 hover:bg-slate-100 transition shadow-sm" title="Configure Detector, OCR Engine, and Reading Order">
+            <svg class="w-3.5 h-3.5 text-slate-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            <span>Settings</span>
+            <span id="settingsSummaryChip" class="hidden md:inline-block px-1.5 py-0.2 rounded bg-slate-100 text-[11px] font-medium text-slate-500">
+              Turbo INT8 · Manga OCR · RTL
             </span>
-            <span id="accelStatusBadge" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200" title="All neural inference runs in a non-blocking background Web Worker with WebGPU acceleration when available">
-              Worker + WebGPU Ready
-            </span>
-          </div>
-          <p class="text-xs text-slate-500 hidden sm:block truncate">
-            100% in-browser Japanese manga OCR powered by open-source GitHub models (no server uploads)
-          </p>
+          </button>
+        </div>
+
+        <!-- Primary Detection & Extraction Workflow Actions -->
+        <div class="flex items-center flex-wrap gap-1.5 sm:gap-2 ml-auto">
+          <button id="btnDetectAllBoxes" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-800 border border-slate-300 hover:border-indigo-400 hover:text-indigo-700 hover:bg-indigo-50/50 transition shadow-sm" title="Detect speech bubble boxes on all uploaded pages without extracting text yet so you can inspect and adjust boxes first">
+            <svg class="w-3.5 h-3.5 text-indigo-600 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/></svg>
+            <span id="detectAllBoxesLabel">Detect All Boxes</span>
+          </button>
+
+          <button id="btnExtractPage" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-indigo-700 border border-indigo-300 hover:bg-indigo-50 transition">
+            <span>Extract Current Page</span>
+          </button>
+
+          <button id="btnExtractAll" type="button" class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition shadow-sm">
+            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            <span id="extractAllLabel">Extract All Japanese Text</span>
+          </button>
+
+          <button id="btnStopExtract" type="button" class="hidden items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-600 text-white hover:bg-rose-700 transition shadow-sm">
+            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 6h12v12H6z"/></svg>
+            <span>Stop</span>
+          </button>
         </div>
       </div>
 
-      <div class="flex items-center flex-wrap gap-2">
-        <button id="btnUploadFolder" type="button" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs sm:text-sm font-medium bg-slate-900 text-white hover:bg-slate-800 transition shadow-sm">
-          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
-          <span>Upload Folder</span>
-        </button>
-
-        <button id="btnUploadFiles" type="button" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs sm:text-sm font-medium bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 transition shadow-sm">
-          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-          <span>Upload Pictures</span>
-        </button>
-
-        <button id="btnLoadSamples" type="button" class="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs sm:text-sm font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 transition" title="Load 2 built-in Japanese manga sample pages">
-          <span>Sample Pages</span>
-        </button>
-
-        <button id="btnOpenStackModal" type="button" class="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs sm:text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition">
-          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z"/></svg>
-          <span class="hidden md:inline">GitHub Stack &amp; CLI</span>
-          <span class="md:hidden">Stack</span>
-        </button>
-      </div>
-    </div>
-
-    <!-- Pipeline Controls & Primary Extract Bar -->
-    <div class="bg-slate-50/90 border-t border-slate-200 px-3 sm:px-5 py-2">
-      <div class="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-2.5">
-        <div class="flex flex-wrap items-center gap-2 sm:gap-3 text-xs">
+      <!-- Collapsible Settings Drawer (Hidden Unless Prompted) -->
+      <div id="settingsPopover" class="hidden mt-2 pt-2.5 pb-1 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div class="flex flex-wrap items-center gap-3">
           <label class="flex items-center gap-1.5 text-slate-600 font-medium">
             <span class="whitespace-nowrap">Detector:</span>
             <select id="selectDetector" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -239,51 +262,49 @@
         </div>
 
         <div class="flex items-center gap-2 ml-auto">
-          <button id="btnExtractPage" type="button" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-white text-indigo-700 border border-indigo-300 hover:bg-indigo-50 transition">
-            <span>Extract Current Page</span>
+          <button id="btnOpenStackModal" type="button" class="px-2.5 py-1 rounded-lg text-xs font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition">
+            Model Info &amp; CLI
           </button>
-
-          <button id="btnExtractAll" type="button" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition shadow-sm">
-            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-            <span id="extractAllLabel">Extract All Japanese Text</span>
-          </button>
-
-          <button id="btnStopExtract" type="button" class="hidden items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-rose-600 text-white hover:bg-rose-700 transition shadow-sm">
-            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 6h12v12H6z"/></svg>
-            <span>Stop</span>
+          <button id="btnCloseSettings" type="button" class="px-2.5 py-1 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-200/70 transition">
+            Hide
           </button>
         </div>
       </div>
 
       <!-- Live Progress Strip -->
-      <div id="progressContainer" class="hidden max-w-[1600px] mx-auto mt-2 pt-2 border-t border-slate-200/80">
+      <div id="progressContainer" class="hidden w-full mt-1.5 pt-1.5 border-t border-slate-200/80">
         <div class="flex items-center justify-between text-xs mb-1 gap-2">
           <span id="progressStatusText" class="font-medium text-indigo-700 truncate">Initializing OCR model…</span>
           <span id="progressPercentText" class="font-semibold text-slate-600 shrink-0">0%</span>
         </div>
-        <div class="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+        <div class="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
           <div id="progressBarFill" class="h-full bg-indigo-600 transition-all duration-200 rounded-full" style="width: 0%"></div>
         </div>
       </div>
     </div>
   </header>
 
-  <!-- Main Workspace -->
-  <main id="dropZoneRoot" class="flex-1 max-w-[1600px] w-full mx-auto p-3 sm:p-4 grid grid-cols-1 lg:grid-cols-12 gap-4 relative">
+  <!-- Main Full-Width & Full-Height Workspace -->
+  <main id="dropZoneRoot" class="flex-1 min-h-0 w-full px-2.5 sm:px-3.5 py-2.5 grid grid-cols-1 lg:grid-cols-12 gap-3 relative">
 
     <!-- Inert placeholder retained for DOM compatibility (full-screen drop disabled) -->
     <div id="dragOverlay" class="hidden" aria-hidden="true"></div>
 
     <!-- Left Column: Pages Queue & Designated Dropzone -->
-    <section class="lg:col-span-3 xl:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden max-h-[380px] lg:max-h-[calc(100vh-148px)]">
-      <div class="p-3 border-b border-slate-200 flex items-center justify-between gap-2">
-        <div>
-          <h2 class="text-xs font-bold uppercase tracking-wider text-slate-500">Manga Pages</h2>
-          <p id="pagesSummaryCount" class="text-xs font-semibold text-slate-800 mt-0.5">0 pages loaded</p>
+    <section class="lg:col-span-3 xl:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden max-h-[360px] lg:max-h-none lg:h-full min-h-0">
+      <div class="px-3 py-2 border-b border-slate-200 flex items-center justify-between gap-1.5">
+        <div class="min-w-0">
+          <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Manga Pages</h2>
+          <p id="pagesSummaryCount" class="text-xs font-semibold text-slate-800 truncate">0 pages loaded</p>
         </div>
-        <button id="btnClearPages" type="button" class="text-xs font-medium text-slate-500 hover:text-rose-600 px-2 py-1 rounded hover:bg-rose-50 transition">
-          Clear
-        </button>
+        <div class="flex items-center gap-1 shrink-0">
+          <button id="btnSidebarSamples" type="button" class="text-[11px] font-medium text-indigo-600 hover:text-indigo-800 px-1.5 py-1 rounded hover:bg-indigo-50 transition" title="Load 2 sample manga pages">
+            Sample
+          </button>
+          <button id="btnClearPages" type="button" class="text-[11px] font-medium text-slate-500 hover:text-rose-600 px-1.5 py-1 rounded hover:bg-rose-50 transition">
+            Clear
+          </button>
+        </div>
       </div>
 
       <!-- Designated Drop Folder or Images Area -->
@@ -313,7 +334,7 @@
     </section>
 
     <!-- Center Column: Interactive Manga Page Viewer & Box Editor -->
-    <section class="lg:col-span-5 xl:col-span-6 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-[420px] lg:max-h-[calc(100vh-148px)]">
+    <section class="lg:col-span-5 xl:col-span-6 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-[420px] lg:min-h-0 lg:h-full">
       <!-- Viewer Toolbar -->
       <div class="px-3 py-2 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 bg-slate-50/60">
         <div class="flex items-center gap-1.5 min-w-0">
@@ -385,7 +406,7 @@
     </section>
 
     <!-- Right Column: Extracted Japanese Text Panel -->
-    <section class="lg:col-span-4 xl:col-span-4 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-[420px] lg:max-h-[calc(100vh-148px)]">
+    <section class="lg:col-span-4 xl:col-span-4 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-[420px] lg:min-h-0 lg:h-full">
       <!-- Transcript Tabs -->
       <div class="p-2.5 border-b border-slate-200 bg-slate-50/70 flex flex-wrap items-center justify-between gap-2">
         <div class="inline-flex rounded-lg bg-slate-200/80 p-0.5 text-xs font-semibold">
@@ -574,12 +595,14 @@ mokuro "/path/to/manga/volume_folder"</pre>
 
       // DOM Elements
       const el = {
+        titleBanner: document.getElementById('titleBanner'),
         accelStatusBadge: document.getElementById('accelStatusBadge'),
         folderInput: document.getElementById('folderInput'),
         filesInput: document.getElementById('filesInput'),
-        btnUploadFolder: document.getElementById('btnUploadFolder'),
-        btnUploadFiles: document.getElementById('btnUploadFiles'),
-        btnLoadSamples: document.getElementById('btnLoadSamples'),
+        btnToggleSettings: document.getElementById('btnToggleSettings'),
+        settingsSummaryChip: document.getElementById('settingsSummaryChip'),
+        settingsPopover: document.getElementById('settingsPopover'),
+        btnCloseSettings: document.getElementById('btnCloseSettings'),
         btnOpenStackModal: document.getElementById('btnOpenStackModal'),
         btnCloseStackModal: document.getElementById('btnCloseStackModal'),
         btnCloseStackModalBottom: document.getElementById('btnCloseStackModalBottom'),
@@ -589,6 +612,8 @@ mokuro "/path/to/manga/volume_folder"</pre>
         selectDetector: document.getElementById('selectDetector'),
         selectOcrEngine: document.getElementById('selectOcrEngine'),
         selectReadingOrder: document.getElementById('selectReadingOrder'),
+        btnDetectAllBoxes: document.getElementById('btnDetectAllBoxes'),
+        detectAllBoxesLabel: document.getElementById('detectAllBoxesLabel'),
         btnExtractPage: document.getElementById('btnExtractPage'),
         btnExtractAll: document.getElementById('btnExtractAll'),
         extractAllLabel: document.getElementById('extractAllLabel'),
@@ -600,6 +625,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         dropZoneRoot: document.getElementById('dropZoneRoot'),
         dragOverlay: document.getElementById('dragOverlay'),
         pagesSummaryCount: document.getElementById('pagesSummaryCount'),
+        btnSidebarSamples: document.getElementById('btnSidebarSamples'),
         btnClearPages: document.getElementById('btnClearPages'),
         sidebarDropTarget: document.getElementById('sidebarDropTarget'),
         btnDropzoneFolder: document.getElementById('btnDropzoneFolder'),
@@ -2101,32 +2127,34 @@ mokuro "/path/to/manga/volume_folder"</pre>
 
       function setExtractingUI(running) {
         state.isExtracting = running;
-        el.btnExtractAll.disabled = running || state.pages.length === 0;
+        const noPages = state.pages.length === 0;
+        el.btnDetectAllBoxes.disabled = running || noPages;
+        el.btnExtractAll.disabled = running || noPages;
         el.btnExtractPage.disabled = running || !getSelectedPage();
         el.btnRedetectPage.disabled = running || !getSelectedPage();
         if (running) {
           el.btnStopExtract.classList.remove('hidden');
           el.btnStopExtract.classList.add('inline-flex');
           el.btnExtractAll.classList.add('opacity-60');
+          el.btnDetectAllBoxes.classList.add('opacity-60');
         } else {
           el.btnStopExtract.classList.add('hidden');
           el.btnStopExtract.classList.remove('inline-flex');
           el.btnExtractAll.classList.remove('opacity-60');
+          el.btnDetectAllBoxes.classList.remove('opacity-60');
         }
       }
 
-      async function extractPagesQueue(targetPages) {
+      // Batch Detect-Only Pipeline: Generates detector boxes across all pages without running OCR
+      // so the user can inspect, move, resize, delete, or draw missing boxes before extracting text
+      async function detectBoxesForAllPages(targetPages) {
         if (state.isExtracting || targetPages.length === 0) return;
         state.abortRequested = false;
         setExtractingUI(true);
+        const t0 = performance.now();
+        let totalBoxesFound = 0;
 
         try {
-          // Warm up chosen OCR engine first so download progress is smooth
-          if (state.ocrEngine === 'manga-ocr') {
-            await ensureMangaOcrReady();
-          } else {
-            await ensureTesseractReady();
-          }
           if (state.detectorMode === 'rtdetr-int8') {
             try {
               await ensureRtdetrReady();
@@ -2147,23 +2175,109 @@ mokuro "/path/to/manga/volume_folder"</pre>
             if (state.abortRequested) throw new Error('ABORTED');
             const page = targetPages[pIdx];
             page.status = 'detecting';
-            renderPageList();
-
-            // Auto-focus page being processed if user hasn't locked onto something else
             state.selectedPageId = page.id;
+            renderPageList();
             renderActivePageStage();
 
             setProgress(
               true,
-              'Page ' + (pIdx + 1) + '/' + targetPages.length + ' (' + page.name + '): Detecting speech bubbles…',
+              'Detecting boxes on page ' + (pIdx + 1) + '/' + targetPages.length + ' (' + page.name + ')…',
               (pIdx / targetPages.length) * 100
             );
 
             const imgEl = await loadImageElement(page.url);
-            if (!page.blocks || page.blocks.length === 0) {
+            page.blocks = await detectBlocksForPage(imgEl);
+            page.boxesDetected = true;
+            page.status = 'detected';
+            page.fullText = '';
+            totalBoxesFound += page.blocks.length;
+
+            renderPageList();
+            renderOverlayBoxes();
+            renderRightPanel();
+          }
+
+          // Select first page so user can review from page #1 onward
+          if (targetPages.length > 0) {
+            state.selectedPageId = targetPages[0].id;
+            state.selectedBlockId = targetPages[0].blocks[0] ? targetPages[0].blocks[0].id : null;
+          }
+
+          const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+          setProgress(true, 'Detected ' + totalBoxesFound + ' boxes across ' + targetPages.length + ' page(s) in ' + elapsed + 's!', 100);
+          showToast('Detected ' + totalBoxesFound + ' boxes across ' + targetPages.length + ' page(s). Review/adjust boxes, then press Extract!');
+          setTimeout(() => {
+            if (!state.isExtracting) setProgress(false);
+          }, 2200);
+        } catch (err) {
+          if (err && err.message === 'ABORTED') {
+            showToast('Box detection stopped.', 'warn');
+          } else {
+            showToast('Box detection error: ' + (err ? err.message : 'Unknown error'), 'error');
+          }
+          for (const p of targetPages) {
+            if (p.status === 'detecting') p.status = 'pending';
+          }
+          setProgress(false);
+        } finally {
+          setExtractingUI(false);
+          renderAll();
+        }
+      }
+
+      async function extractPagesQueue(targetPages) {
+        if (state.isExtracting || targetPages.length === 0) return;
+        state.abortRequested = false;
+        setExtractingUI(true);
+
+        try {
+          if (state.ocrEngine === 'manga-ocr') {
+            await ensureMangaOcrReady();
+          } else {
+            await ensureTesseractReady();
+          }
+
+          const needsDetector = targetPages.some((p) => !p.boxesDetected && (!p.blocks || p.blocks.length === 0));
+          if (needsDetector) {
+            if (state.detectorMode === 'rtdetr-int8') {
+              try {
+                await ensureRtdetrReady();
+              } catch (detErr) {
+                if (detErr && detErr.message === 'ABORTED') throw detErr;
+                showToast('Falling back to Fast Bubble Heuristic: ' + detErr.message, 'warn');
+              }
+            } else if (state.detectorMode === 'ctd-onnx') {
+              try {
+                await ensureCtdSession();
+              } catch (detErr) {
+                if (detErr && detErr.message === 'ABORTED') throw detErr;
+                showToast('Falling back to Fast Bubble Heuristic: ' + detErr.message, 'warn');
+              }
+            }
+          }
+
+          for (let pIdx = 0; pIdx < targetPages.length; pIdx++) {
+            if (state.abortRequested) throw new Error('ABORTED');
+            const page = targetPages[pIdx];
+            state.selectedPageId = page.id;
+
+            const imgEl = await loadImageElement(page.url);
+            if (!page.boxesDetected && (!page.blocks || page.blocks.length === 0)) {
+              page.status = 'detecting';
+              renderPageList();
+              renderActivePageStage();
+              setProgress(
+                true,
+                'Page ' + (pIdx + 1) + '/' + targetPages.length + ' (' + page.name + '): Detecting speech bubbles…',
+                (pIdx / targetPages.length) * 100
+              );
               page.blocks = await detectBlocksForPage(imgEl);
+              page.boxesDetected = true;
             } else {
-              page.blocks = sortBlocksByReadingOrder(page.blocks, state.readingOrder);
+              if (page.blocks && page.blocks.length > 1) {
+                page.blocks = sortBlocksByReadingOrder(page.blocks, state.readingOrder);
+              }
+              renderActivePageStage();
             }
 
             page.status = 'recognizing';
@@ -2291,6 +2405,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
             width,
             height,
             status: 'pending',
+            boxesDetected: false,
             blocks: [],
             fullText: ''
           });
@@ -2649,6 +2764,8 @@ mokuro "/path/to/manga/volume_folder"</pre>
         for (const p of state.pages) {
           const im = await loadImageElement(p.url);
           p.blocks = sortBlocksByReadingOrder(detectSpeechBubblesHeuristic(im), state.readingOrder);
+          p.boxesDetected = true;
+          p.status = 'detected';
         }
 
         state.isSampleSet = true;
@@ -2693,9 +2810,13 @@ mokuro "/path/to/manga/volume_folder"</pre>
       function renderPageList() {
         const count = state.pages.length;
         el.pagesSummaryCount.textContent = count + (count === 1 ? ' page loaded' : ' pages loaded');
+        el.detectAllBoxesLabel.textContent = count > 0
+          ? 'Detect All Boxes (' + count + ')'
+          : 'Detect All Boxes';
         el.extractAllLabel.textContent = count > 0
           ? 'Extract All Japanese Text (' + count + ')'
           : 'Extract All Japanese Text';
+        el.btnDetectAllBoxes.disabled = state.isExtracting || count === 0;
         el.btnExtractAll.disabled = state.isExtracting || count === 0;
         el.sampleNoticeBanner.classList.toggle('hidden', !state.isSampleSet || count === 0);
 
@@ -2743,12 +2864,20 @@ mokuro "/path/to/manga/volume_folder"</pre>
           if (page.status === 'done') {
             statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800';
             statusBadge.textContent = 'Extracted';
-          } else if (page.status === 'detecting' || page.status === 'recognizing') {
+          } else if (page.status === 'detecting') {
+            statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 animate-pulse';
+            statusBadge.textContent = 'Detecting…';
+          } else if (page.status === 'recognizing') {
             statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 animate-pulse';
             statusBadge.textContent = 'OCR…';
+          } else if (page.boxesDetected) {
+            statusBadge.className = page.blocks.length > 0
+              ? 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200'
+              : 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200';
+            statusBadge.textContent = page.blocks.length + (page.blocks.length === 1 ? ' box' : ' boxes');
           } else {
             statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600';
-            statusBadge.textContent = page.blocks.length > 0 ? page.blocks.length + ' boxes' : 'Ready';
+            statusBadge.textContent = 'Ready';
           }
           titleRow.appendChild(numSpan);
           titleRow.appendChild(statusBadge);
@@ -2911,6 +3040,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         const prevIdx = page.blocks.findIndex((b) => b.id === blockId);
         if (prevIdx < 0) return;
         page.blocks.splice(prevIdx, 1);
+        page.boxesDetected = true;
         updatePageFullText(page);
         if (state.selectedBlockId === blockId) {
           const nextBlk = page.blocks[prevIdx] || page.blocks[prevIdx - 1] || null;
@@ -2982,7 +3112,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         if (!page) return;
         if (state.fitMode) {
           el.activePageImage.style.width = '';
-          el.activePageImage.style.maxHeight = 'calc(100vh - 255px)';
+          el.activePageImage.style.maxHeight = 'calc(100vh - 175px)';
         } else {
           const targetW = Math.round(page.width * state.zoom);
           el.activePageImage.style.maxHeight = 'none';
@@ -3446,6 +3576,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
           charConf: null
         };
         page.blocks.push(newBlk);
+        page.boxesDetected = true;
         page.blocks = sortBlocksByReadingOrder(page.blocks, state.readingOrder);
         state.selectedBlockId = newBlk.id;
         setActiveTab('bubbles');
@@ -3496,13 +3627,45 @@ mokuro "/path/to/manga/volume_folder"</pre>
       // -----------------------------------------------------------------------
       // Wire All Event Listeners
       // -----------------------------------------------------------------------
-      el.btnUploadFolder.addEventListener('click', () => el.folderInput.click());
+      function updateSettingsSummaryChip() {
+        const detShort = state.detectorMode === 'rtdetr-int8'
+          ? 'Turbo INT8'
+          : state.detectorMode === 'ctd-onnx'
+          ? 'Mokuro CTD'
+          : state.detectorMode === 'bubble-heuristic'
+          ? 'Heuristic'
+          : 'Whole Image';
+        const ocrShort = state.ocrEngine === 'manga-ocr' ? 'Manga OCR' : 'Tesseract';
+        const ordShort = state.readingOrder.toUpperCase();
+        el.settingsSummaryChip.textContent = detShort + ' · ' + ocrShort + ' · ' + ordShort;
+      }
+
+      function setSettingsOpen(open) {
+        el.settingsPopover.classList.toggle('hidden', !open);
+        el.btnToggleSettings.classList.toggle('bg-indigo-50', open);
+        el.btnToggleSettings.classList.toggle('border-indigo-300', open);
+        el.btnToggleSettings.classList.toggle('text-indigo-700', open);
+      }
+
+      el.btnToggleSettings.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const isHidden = el.settingsPopover.classList.contains('hidden');
+        setSettingsOpen(isHidden);
+      });
+      el.btnCloseSettings.addEventListener('click', () => setSettingsOpen(false));
+      document.addEventListener('click', (ev) => {
+        if (!el.settingsPopover.classList.contains('hidden')) {
+          if (!el.settingsPopover.contains(ev.target) && !el.btnToggleSettings.contains(ev.target)) {
+            setSettingsOpen(false);
+          }
+        }
+      });
+
       el.btnEmptyUploadFolder.addEventListener('click', () => el.folderInput.click());
       el.btnDropzoneFolder.addEventListener('click', (ev) => {
         ev.stopPropagation();
         el.folderInput.click();
       });
-      el.btnUploadFiles.addEventListener('click', () => el.filesInput.click());
       el.btnEmptyUploadFiles.addEventListener('click', () => el.filesInput.click());
       el.sidebarDropTarget.addEventListener('click', (ev) => {
         if (ev.target.closest('button')) return;
@@ -3523,7 +3686,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         }
       });
 
-      el.btnLoadSamples.addEventListener('click', () => loadBuiltInSamples());
+      el.btnSidebarSamples.addEventListener('click', () => loadBuiltInSamples());
       el.btnEmptyLoadSamples.addEventListener('click', () => loadBuiltInSamples());
 
       el.btnClearPages.addEventListener('click', () => {
@@ -3608,6 +3771,10 @@ mokuro "/path/to/manga/volume_folder"</pre>
             el.stackModal.classList.add('hidden');
             return;
           }
+          if (!el.settingsPopover.classList.contains('hidden')) {
+            setSettingsOpen(false);
+            return;
+          }
           if (state.drawMode) {
             setDrawMode(false);
             return;
@@ -3689,12 +3856,15 @@ mokuro "/path/to/manga/volume_folder"</pre>
       // Dropdown Controls
       el.selectDetector.addEventListener('change', () => {
         state.detectorMode = el.selectDetector.value;
+        updateSettingsSummaryChip();
       });
       el.selectOcrEngine.addEventListener('change', () => {
         state.ocrEngine = el.selectOcrEngine.value;
+        updateSettingsSummaryChip();
       });
       el.selectReadingOrder.addEventListener('change', () => {
         state.readingOrder = el.selectReadingOrder.value;
+        updateSettingsSummaryChip();
         for (const p of state.pages) {
           if (p.blocks && p.blocks.length > 0) {
             p.blocks = sortBlocksByReadingOrder(p.blocks, state.readingOrder);
@@ -3705,7 +3875,10 @@ mokuro "/path/to/manga/volume_folder"</pre>
         renderRightPanel();
       });
 
-      // Extract & Stop Buttons
+      // Batch Detect All Boxes, Extract & Stop Buttons
+      el.btnDetectAllBoxes.addEventListener('click', () => {
+        detectBoxesForAllPages(state.pages);
+      });
       el.btnExtractAll.addEventListener('click', () => {
         extractPagesQueue(state.pages);
       });
@@ -3756,7 +3929,8 @@ mokuro "/path/to/manga/volume_folder"</pre>
           const im = await loadImageElement(page.url);
           page.blocks = await detectBlocksForPage(im);
           const elapsedSec = ((performance.now() - t0) / 1000).toFixed(2);
-          page.status = 'pending';
+          page.boxesDetected = true;
+          page.status = 'detected';
           updatePageFullText(page);
           setProgress(false);
           showToast('Detected ' + page.blocks.length + ' text region(s) in ' + elapsedSec + 's.');
@@ -3859,6 +4033,14 @@ mokuro "/path/to/manga/volume_folder"</pre>
       el.btnCopyCliCmd.addEventListener('click', () => {
         copyTextSafe(el.cliCommandBlock.textContent, 'Copied mokuro CLI commands!');
       });
+
+      // Auto-collapse intro title bar after 3.5 seconds to maximize manga workspace
+      updateSettingsSummaryChip();
+      setTimeout(() => {
+        if (el.titleBanner) {
+          el.titleBanner.classList.add('is-collapsed');
+        }
+      }, 3500);
 
       // Initialize background worker probe & 2 sample manga pages ready to extract
       ensureAiWorker();
