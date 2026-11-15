@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Mokuro Turbo Native Server — Multi-Core & GPU Batched Manga OCR Backend.
+"""Mokuro Turbo Native Server — Volume-Scale RTX CUDA & Multi-Core Manga OCR Backend.
 
-Eliminates single-thread browser bottlenecks by running:
-  1. Parallel multi-page speech-bubble detection across a C++ ONNX Runtime / GPU session pool
-     (supports CUDA, Windows DirectML, Apple CoreML, and multi-core CPU).
-  2. Batched GPU VisionEncoderDecoder inference (PyTorch CUDA FP16 / Apple MPS with KV-cache,
-     processing 24+ bubbles per forward pass) OR a multi-core C++ ONNX Runtime session pool
-     decoding N bubbles simultaneously across all physical CPU cores.
-  3. Serves the full web UI at http://127.0.0.1:7860 (with COOP/COEP + CORS + Private Network
-     headers so both http://127.0.0.1:7860 and external browser tabs can connect).
+Engineered for 200–1,000+ page manga volumes:
+  - /api/extract_pages_server: Accepts whole-page JPEGs/PNGs directly from the browser (zero JS
+    canvas cropping overhead!), decodes pages + crops speech bubbles in parallel C threads,
+    length-buckets bubbles by area so short balloons terminate early, and runs batch_size=48
+    FP16 Tensor-Core `model.generate()` on CUDA (or Apple MPS / all-core C++ ONNX pool).
+  - Completely immune to browser background tab throttling once a chunk is dispatched.
 """
 
 from __future__ import annotations
@@ -16,14 +14,16 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import io
+import json
 import os
 from pathlib import Path
 import queue
 import re
 import threading
+import time
+from typing import Any
 import urllib.request
 import webbrowser
-from typing import Any
 
 from fastapi import FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,7 +33,6 @@ import onnxruntime as ort
 from PIL import Image
 import uvicorn
 
-# Optional PyTorch + Transformers batched GPU/MPS engine (auto-used when installed with GPU)
 try:
   import torch
   from transformers import VisionEncoderDecoderModel
@@ -55,7 +54,7 @@ MODEL_URLS = {
 }
 
 CPU_CORES = max(2, os.cpu_count() or 4)
-DEFAULT_WORKERS = min(8, max(2, CPU_CORES // 2))
+DEFAULT_WORKERS = min(8, max(3, CPU_CORES // 2))
 _DOWNLOAD_LOCK = threading.Lock()
 
 
@@ -71,9 +70,9 @@ def ensure_cached_file(filename: str, primary_url: str, fallback_url: str | None
     last_err = None
     for url in urls:
       try:
-        print(f"[Mokuro Turbo] Downloading {filename} from {url} ...")
-        req = urllib.request.Request(url, headers={"User-Agent": "MokuroTurbo/1.0"})
-        with urllib.request.urlopen(req, timeout=120) as resp, open(tmp, "wb") as out:
+        print(f"[Mokuro Turbo] Downloading {filename} ...")
+        req = urllib.request.Request(url, headers={"User-Agent": "MokuroTurbo/2.0"})
+        with urllib.request.urlopen(req, timeout=180) as resp, open(tmp, "wb") as out:
           while True:
             chunk = resp.read(1024 * 1024)
             if not chunk:
@@ -98,7 +97,7 @@ def detect_ort_providers(prefer_cpu_for_int8: bool = False) -> tuple[list[str], 
       return ["DmlExecutionProvider", "CPUExecutionProvider"], "ONNX DirectML GPU"
     if "CoreMLExecutionProvider" in avail:
       return ["CoreMLExecutionProvider", "CPUExecutionProvider"], "ONNX CoreML"
-  return ["CPUExecutionProvider"], f"ONNX Multi-Core CPU ({CPU_CORES} threads)"
+  return ["CPUExecutionProvider"], f"ONNX Multi-Core CPU ({CPU_CORES} logical cores)"
 
 
 def postprocess_japanese_text(text: str) -> str:
@@ -136,10 +135,11 @@ def merge_nested_boxes(boxes: list[list[float]]) -> list[list[float]]:
 
 
 class ParallelDetectorPool:
-  """Pool of independent C++ ONNX Runtime sessions for lock-free multi-page detection."""
+  """Multi-session C++ ONNX Runtime detector pool (runs on CPU threads concurrently with CUDA OCR)."""
 
-  def __init__(self, num_workers: int) -> None:
+  def __init__(self, num_workers: int, cuda_ocr_active: bool = False) -> None:
     self.num_workers = num_workers
+    self.cuda_ocr_active = cuda_ocr_active
     self.intra_threads = max(1, CPU_CORES // num_workers)
     self._pools: dict[str, queue.Queue[ort.InferenceSession]] = {}
     self._lock = threading.Lock()
@@ -154,7 +154,8 @@ class ParallelDetectorPool:
         return self._pools[key]
       if key == "ctd":
         model_path = ensure_cached_file("comictextdetector.onnx", MODEL_URLS["ctd_onnx"])
-        providers, _ = detect_ort_providers(prefer_cpu_for_int8=False)
+        # Avoid DirectML + PyTorch CUDA WDDM context thrashing on 6GB mobile GPUs when CUDA OCR is active
+        providers, _ = detect_ort_providers(prefer_cpu_for_int8=self.cuda_ocr_active)
         pool_size = 1 if providers[0] != "CPUExecutionProvider" else min(self.num_workers, 4)
       else:
         model_path = ensure_cached_file(
@@ -162,7 +163,7 @@ class ParallelDetectorPool:
             MODEL_URLS["rtdetr_int8"],
             MODEL_URLS["rtdetr_int8_mirror"],
         )
-        providers, _ = detect_ort_providers(prefer_cpu_for_int8=True)
+        providers = ["CPUExecutionProvider"]
         pool_size = self.num_workers
 
       q: queue.Queue[ort.InferenceSession] = queue.Queue()
@@ -216,7 +217,6 @@ class ParallelDetectorPool:
             cands.append([x1, y1, x2, y2, sc])
         return merge_nested_boxes(cands)
 
-      # Default: ogkalu/comic-text-and-bubble-detector INT8 (640x640)
       resized = img_rgb.resize((640, 640), Image.Resampling.BILINEAR)
       arr = np.asarray(resized, dtype=np.float32).transpose(2, 0, 1)[None, ...] / 255.0
       feeds: dict[str, Any] = {}
@@ -258,25 +258,37 @@ class ParallelDetectorPool:
     return [f.result() for f in futures]
 
 
-class HybridMangaOcrEngine:
-  """Uses GPU-batched PyTorch KV-cache inference if available, else C++ ONNX multi-core pool."""
+def _preprocess_crop_224(crop: Image.Image) -> np.ndarray:
+  gray_rgb = crop.convert("L").convert("RGB").resize((224, 224), Image.Resampling.BILINEAR)
+  return (np.asarray(gray_rgb, dtype=np.float32).transpose(2, 0, 1) / 127.5) - 1.0
 
-  def __init__(self, num_workers: int, force_onnx: bool = False) -> None:
+
+class HybridMangaOcrEngine:
+  """Area-bucketed batch_size=48 CUDA Tensor-Core AMP engine (with C++ ONNX multi-core fallback)."""
+
+  def __init__(self, num_workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) -> None:
     self.num_workers = num_workers
+    self.gpu_batch_size = gpu_batch_size
     self.intra_threads = max(1, CPU_CORES // num_workers)
     self.use_torch_gpu = False
+    self.torch_device = "cpu"
     self.accelerator_label = ""
     self._init_lock = threading.Lock()
+    self._gpu_lock = threading.Lock()
     self._ready = False
-    self.executor = ThreadPoolExecutor(max_workers=num_workers)
+    self.executor = ThreadPoolExecutor(max_workers=max(num_workers, 8))
     self._onnx_pool: queue.Queue[tuple[ort.InferenceSession, ort.InferenceSession]] = queue.Queue()
     self._vocab: list[str] = []
 
     if HAS_TORCH_TRANSFORMERS and not force_onnx:
       if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        if hasattr(torch, "set_float32_matmul_precision"):
+          torch.set_float32_matmul_precision("high")
         self.use_torch_gpu = True
         self.torch_device = "cuda"
-        self.accelerator_label = f"PyTorch CUDA Batched ({torch.cuda.get_device_name(0)})"
+        gpu_name = torch.cuda.get_device_name(0)
+        self.accelerator_label = f"CUDA Tensor-Core Batched ({gpu_name})"
       elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         self.use_torch_gpu = True
         self.torch_device = "mps"
@@ -296,12 +308,22 @@ class HybridMangaOcrEngine:
       self._vocab = vocab_path.read_text(encoding="utf-8").splitlines()
 
       if self.use_torch_gpu:
-        print(f"[Mokuro Turbo] Loading kha-white/manga-ocr-base on {self.torch_device} (batched Tensor-Core AMP + KV-cache)...")
-        # Keep FP32 master weights so DeiT LayerNorm variance never overflows FP16 on Turing (RTX 20xx),
-        # while torch.amp.autocast accelerates matmuls/convs on Tensor Cores!
+        print(f"[Mokuro Turbo] Loading kha-white/manga-ocr-base onto {self.accelerator_label}...")
         self.model = VisionEncoderDecoderModel.from_pretrained("kha-white/manga-ocr-base")
+        self.model.config.eos_token_id = 3
+        self.model.config.pad_token_id = 0
+        self.model.config.decoder_start_token_id = 2
         self.model.to(self.torch_device)
         self.model.eval()
+        # Warm up CUDA kernel cache with 1 dummy forward pass
+        with torch.inference_mode():
+          dummy = torch.zeros((2, 3, 224, 224), dtype=torch.float32, device=self.torch_device)
+          if self.torch_device == "cuda":
+            with torch.amp.autocast("cuda", dtype=torch.float16):
+              self.model.generate(dummy, max_new_tokens=4, num_beams=1, use_cache=True, eos_token_id=3, pad_token_id=0)
+          else:
+            self.model.generate(dummy, max_new_tokens=4, num_beams=1, use_cache=True, eos_token_id=3, pad_token_id=0)
+        print(f"[Mokuro Turbo] GPU Warmup complete! Ready for batch_size={self.gpu_batch_size} extraction.")
         self._ready = True
         return
 
@@ -319,9 +341,22 @@ class HybridMangaOcrEngine:
         self._onnx_pool.put((enc, dec))
       self._ready = True
 
+  def _decode_token_seq(self, seq: list[int]) -> str:
+    special = {"[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", ""}
+    chars: list[str] = []
+    for tid in seq:
+      if tid == 3:
+        break
+      tok = self._vocab[tid] if 0 <= tid < len(self._vocab) else ""
+      if tok in special:
+        continue
+      if tok.startswith("##"):
+        tok = tok[2:]
+      chars.append(tok)
+    return postprocess_japanese_text("".join(chars))
+
   def _decode_one_onnx(self, pil_img: Image.Image) -> dict[str, Any]:
-    gray_rgb = pil_img.convert("L").convert("RGB").resize((224, 224), Image.Resampling.BILINEAR)
-    arr = (np.asarray(gray_rgb, dtype=np.float32).transpose(2, 0, 1)[None, ...] / 127.5) - 1.0
+    arr = _preprocess_crop_224(pil_img)[None, ...]
     enc, dec = self._onnx_pool.get()
     try:
       enc_in = enc.get_inputs()[0].name
@@ -329,7 +364,7 @@ class HybridMangaOcrEngine:
       dec_inputs = [i.name for i in dec.get_inputs()]
       ids = [2]
       probs: list[float] = []
-      for _ in range(160):
+      for _ in range(96):
         feeds: dict[str, Any] = {}
         for name in dec_inputs:
           if name == "input_ids":
@@ -352,18 +387,8 @@ class HybridMangaOcrEngine:
         probs.append(prob)
         if len(ids) >= 10 and len(set(ids[-7:])) == 1:
           break
-
-      special = {"[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", ""}
-      chars: list[str] = []
-      for tid in ids[1:]:
-        tok = self._vocab[tid] if tid < len(self._vocab) else ""
-        if tok in special:
-          continue
-        if tok.startswith("##"):
-          tok = tok[2:]
-        chars.append(tok)
       avg_conf = float(np.mean(probs)) if probs else 0.0
-      return {"text": postprocess_japanese_text("".join(chars)), "conf": avg_conf}
+      return {"text": self._decode_token_seq(ids[1:]), "conf": avg_conf}
     finally:
       self._onnx_pool.put((enc, dec))
 
@@ -373,44 +398,76 @@ class HybridMangaOcrEngine:
     self.ensure_loaded()
 
     if self.use_torch_gpu:
-      results: list[dict[str, Any]] = []
-      chunk_size = 24
-      with torch.inference_mode():
-        for i in range(0, len(crops), chunk_size):
-          sub = crops[i : i + chunk_size]
-          batch_np = np.stack([
-              (np.asarray(c.convert("L").convert("RGB").resize((224, 224), Image.Resampling.BILINEAR), dtype=np.float32).transpose(2, 0, 1) / 127.5) - 1.0
-              for c in sub
-          ], axis=0)
-          pixel_values = torch.from_numpy(batch_np).to(self.torch_device, non_blocking=True)
+      # Sort crops by pixel area so short 3-char bubbles batch together and terminate in ~8 steps
+      # instead of waiting on a 60-char monologue bubble in the same batch!
+      indexed = sorted(enumerate(crops), key=lambda pair: pair[1].width * pair[1].height)
+      sorted_crops = [p[1] for p in indexed]
+
+      # Parallel C-thread resize + normalize across all crops before GPU transfer
+      pre_arrays = list(self.executor.map(_preprocess_crop_224, sorted_crops))
+      sorted_results: list[dict[str, Any]] = []
+      bs = self.gpu_batch_size
+
+      with self._gpu_lock, torch.inference_mode():
+        for i in range(0, len(pre_arrays), bs):
+          batch_np = np.stack(pre_arrays[i : i + bs], axis=0)
+          cpu_tensor = torch.from_numpy(batch_np)
+          if self.torch_device == "cuda":
+            cpu_tensor = cpu_tensor.pin_memory()
+          pixel_values = cpu_tensor.to(self.torch_device, non_blocking=True)
+
           if self.torch_device == "cuda":
             with torch.amp.autocast("cuda", dtype=torch.float16):
-              gen_ids = self.model.generate(pixel_values, max_new_tokens=160, num_beams=1, use_cache=True)
+              gen_ids = self.model.generate(
+                  pixel_values,
+                  max_new_tokens=96,
+                  num_beams=1,
+                  use_cache=True,
+                  eos_token_id=3,
+                  pad_token_id=0,
+              )
           else:
-            gen_ids = self.model.generate(pixel_values, max_new_tokens=160, num_beams=1, use_cache=True)
-          special = {"[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", ""}
-          for seq in gen_ids.tolist():
-            chars = []
-            for tid in seq:
-              if tid == 3:
-                break
-              tok = self._vocab[tid] if 0 <= tid < len(self._vocab) else ""
-              if tok in special:
-                continue
-              if tok.startswith("##"):
-                tok = tok[2:]
-              chars.append(tok)
-            results.append({"text": postprocess_japanese_text("".join(chars)), "conf": 0.96})
-      return results
+            gen_ids = self.model.generate(
+                pixel_values,
+                max_new_tokens=96,
+                num_beams=1,
+                use_cache=True,
+                eos_token_id=3,
+                pad_token_id=0,
+            )
+
+          for seq in gen_ids.cpu().tolist():
+            sorted_results.append({"text": self._decode_token_seq(seq), "conf": 0.96})
+
+      # Restore original order
+      final_out: list[dict[str, Any]] = [{"text": "", "conf": 0.0}] * len(crops)
+      for (orig_idx, _), res in zip(indexed, sorted_results):
+        final_out[orig_idx] = res
+      return final_out
 
     futures = [self.executor.submit(self._decode_one_onnx, c) for c in crops]
     return [f.result() for f in futures]
 
 
-def build_app(workers: int, force_onnx: bool = False) -> FastAPI:
+def _decode_bytes_to_rgb(raw: bytes) -> Image.Image:
+  im = Image.open(io.BytesIO(raw))
+  return im.convert("RGB")
+
+
+def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) -> FastAPI:
   app = FastAPI(title="Mokuro Turbo Native Server")
-  det_pool = ParallelDetectorPool(num_workers=workers)
-  ocr_engine = HybridMangaOcrEngine(num_workers=workers, force_onnx=force_onnx)
+  ocr_engine = HybridMangaOcrEngine(num_workers=workers, force_onnx=force_onnx, gpu_batch_size=gpu_batch_size)
+  det_pool = ParallelDetectorPool(num_workers=workers, cuda_ocr_active=ocr_engine.use_torch_gpu)
+  io_pool = ThreadPoolExecutor(max_workers=max(8, workers * 2))
+
+  if ocr_engine.use_torch_gpu:
+    print(f"[GPU ACTIVE] {ocr_engine.accelerator_label} | Batch={gpu_batch_size}")
+  else:
+    print(f"[CPU MODE] {ocr_engine.accelerator_label}")
+    if HAS_TORCH_TRANSFORMERS:
+      print("  Note: PyTorch is installed WITHOUT CUDA support! Run run_windows.bat to install CUDA PyTorch.")
+    else:
+      print("  Tip: Install CUDA PyTorch + transformers (run_windows.bat) for 20x-40x faster RTX GPU batching.")
 
   app.add_middleware(
       CORSMiddleware,
@@ -449,6 +506,7 @@ def build_app(workers: int, force_onnx: bool = False) -> FastAPI:
     return {
         "ok": True,
         "accelerator": ocr_engine.accelerator_label,
+        "gpu_active": ocr_engine.use_torch_gpu,
         "cpu_cores": CPU_CORES,
         "workers": workers,
     }
@@ -458,21 +516,79 @@ def build_app(workers: int, force_onnx: bool = False) -> FastAPI:
       files: list[UploadFile] = File(...),
       detector_mode: str = Form("rtdetr-int8"),
   ) -> dict[str, Any]:
-    pil_pages: list[Image.Image] = []
-    for up in files:
-      raw = await up.read()
-      pil_pages.append(Image.open(io.BytesIO(raw)))
+    raw_list = [await up.read() for up in files]
+    pil_pages = list(io_pool.map(_decode_bytes_to_rgb, raw_list))
     batch_boxes = det_pool.detect_batch(pil_pages, detector_mode)
     return {"ok": True, "pages": [{"boxes": b} for b in batch_boxes]}
 
   @app.post("/api/ocr_batch")
   async def api_ocr_batch(files: list[UploadFile] = File(...)) -> dict[str, Any]:
-    crops: list[Image.Image] = []
-    for up in files:
-      raw = await up.read()
-      crops.append(Image.open(io.BytesIO(raw)))
+    raw_list = [await up.read() for up in files]
+    crops = list(io_pool.map(_decode_bytes_to_rgb, raw_list))
     out = ocr_engine.recognize_batch(crops)
     return {"ok": True, "results": out}
+
+  @app.post("/api/extract_pages_server")
+  async def api_extract_pages_server(
+      files: list[UploadFile] = File(...),
+      detector_mode: str = Form("rtdetr-int8"),
+      meta_json: str = Form("[]"),
+  ) -> dict[str, Any]:
+    t0 = time.perf_counter()
+    raw_list = [await up.read() for up in files]
+    pil_pages = list(io_pool.map(_decode_bytes_to_rgb, raw_list))
+    meta = json.loads(meta_json) if meta_json else []
+
+    # 1. Detect only pages that weren't pre-detected
+    undetected_indices = [
+        i for i in range(len(pil_pages))
+        if i >= len(meta) or not meta[i].get("boxes_detected")
+    ]
+    detected_map: dict[int, list[list[float]]] = {}
+    if undetected_indices:
+      sub_imgs = [pil_pages[i] for i in undetected_indices]
+      det_out = det_pool.detect_batch(sub_imgs, detector_mode)
+      for idx, boxes in zip(undetected_indices, det_out):
+        detected_map[idx] = boxes
+
+    # 2. Crop all bubbles in C memory across all pages in this chunk
+    page_boxes_list: list[list[list[float]]] = []
+    all_crops: list[Image.Image] = []
+    crop_counts: list[int] = []
+
+    for i, page_im in enumerate(pil_pages):
+      w, h = page_im.size
+      boxes = detected_map[i] if i in detected_map else (meta[i].get("boxes") or [])
+      page_boxes_list.append(boxes)
+      cnt = 0
+      for b in boxes:
+        x1 = max(0, min(w - 1, int(round(b[0]))))
+        y1 = max(0, min(h - 1, int(round(b[1]))))
+        x2 = max(x1 + 1, min(w, int(round(b[2]))))
+        y2 = max(y1 + 1, min(h, int(round(b[3]))))
+        all_crops.append(page_im.crop((x1, y1, x2, y2)))
+        cnt += 1
+      crop_counts.append(cnt)
+
+    # 3. Run single batched Tensor-Core / Multi-Core OCR pass across all crops
+    ocr_results = ocr_engine.recognize_batch(all_crops) if all_crops else []
+
+    # 4. Reassemble per-page responses
+    pages_out: list[dict[str, Any]] = []
+    offset = 0
+    for i, boxes in enumerate(page_boxes_list):
+      cnt = crop_counts[i]
+      slice_res = ocr_results[offset : offset + cnt]
+      offset += cnt
+      pages_out.append({
+          "boxes": boxes,
+          "texts": [r["text"] for r in slice_res],
+          "confs": [r["conf"] for r in slice_res],
+      })
+
+    dt = max(0.001, time.perf_counter() - t0)
+    print(f"[Turbo Chunk] {len(pil_pages)} pages ({len(all_crops)} bubbles) in {dt:.2f}s ({len(pil_pages)/dt:.1f} pages/s)")
+    return {"ok": True, "pages": pages_out}
 
   return app
 
@@ -481,16 +597,17 @@ def main() -> None:
   parser = argparse.ArgumentParser(description="Mokuro Turbo Local Multi-Core / GPU Server")
   parser.add_argument("--host", default="127.0.0.1")
   parser.add_argument("--port", type=int, default=7860)
-  parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Parallel worker threads")
+  parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Parallel CPU worker threads")
+  parser.add_argument("--batch-size", type=int, default=48, help="CUDA GPU OCR batch size")
   parser.add_argument("--onnx-only", action="store_true", help="Force C++ ONNX multi-core pool")
   parser.add_argument("--no-browser", action="store_true", help="Do not auto-open browser tab")
   args = parser.parse_args()
 
-  app = build_app(workers=max(1, args.workers), force_onnx=args.onnx_only)
+  app = build_app(workers=max(1, args.workers), force_onnx=args.onnx_only, gpu_batch_size=max(4, args.batch_size))
   url = f"http://{args.host}:{args.port}"
   print(f"\n========================================================")
   print(f" Mokuro Turbo Native Server listening at {url}")
-  print(f" CPU Cores: {CPU_CORES} | Parallel Worker Pool: {args.workers}")
+  print(f" CPU Cores: {CPU_CORES} | Worker Pool: {args.workers} | GPU Batch: {args.batch_size}")
   print(f"========================================================\n")
 
   if not args.no_browser:

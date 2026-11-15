@@ -1822,7 +1822,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         const fd = new FormData();
         fd.append('detector_mode', state.detectorMode);
         for (let i = 0; i < pagesSubset.length; i++) {
-          const blob = await urlToBlob(pagesSubset[i].url);
+          const blob = await getPageFileOrBlob(pagesSubset[i]);
           fd.append('files', blob, pagesSubset[i].name || ('page_' + i + '.png'));
         }
         const endpoint = state.nativeBackend.url + '/api/detect_batch';
@@ -1832,18 +1832,107 @@ mokuro "/path/to/manga/volume_folder"</pre>
         return data.pages || [];
       }
 
+      // Background Tab Anti-Sleep Keep-Alive:
+      // Holds an inaudible (-100 dB) Web Audio stream + Web Lock + Screen WakeLock while a job runs
+      // so Chrome/Edge/Firefox will NOT throttle or freeze the tab when minimized or in the background.
+      const keepAliveState = {
+        audioCtx: null,
+        osc: null,
+        wakeLock: null,
+        lockRelease: null
+      };
+
+      async function acquireBackgroundKeepAlive() {
+        try {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (AudioCtx && !keepAliveState.audioCtx) {
+            const ctx = new AudioCtx();
+            if (ctx.state === 'suspended') {
+              await ctx.resume().catch(() => {});
+            }
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            gain.gain.value = 0.00001; // -100 dB completely silent
+            osc.frequency.value = 20;
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            keepAliveState.audioCtx = ctx;
+            keepAliveState.osc = osc;
+          }
+        } catch (_e) { /* ignore */ }
+
+        try {
+          if (navigator.locks && navigator.locks.request && !keepAliveState.lockRelease) {
+            navigator.locks.request('mokuro_active_batch_job', () => new Promise((res) => {
+              keepAliveState.lockRelease = res;
+            })).catch(() => {});
+          }
+        } catch (_e) { /* ignore */ }
+
+        try {
+          if (navigator.wakeLock && navigator.wakeLock.request && !keepAliveState.wakeLock) {
+            keepAliveState.wakeLock = await navigator.wakeLock.request('screen').catch(() => null);
+          }
+        } catch (_e) { /* ignore */ }
+      }
+
+      function releaseBackgroundKeepAlive() {
+        if (keepAliveState.osc) {
+          try { keepAliveState.osc.stop(); keepAliveState.osc.disconnect(); } catch (_e) { /* ignore */ }
+          keepAliveState.osc = null;
+        }
+        if (keepAliveState.audioCtx) {
+          try { keepAliveState.audioCtx.close(); } catch (_e) { /* ignore */ }
+          keepAliveState.audioCtx = null;
+        }
+        if (keepAliveState.lockRelease) {
+          try { keepAliveState.lockRelease(); } catch (_e) { /* ignore */ }
+          keepAliveState.lockRelease = null;
+        }
+        if (keepAliveState.wakeLock) {
+          try { keepAliveState.wakeLock.release(); } catch (_e) { /* ignore */ }
+          keepAliveState.wakeLock = null;
+        }
+      }
+
+      async function getPageFileOrBlob(page) {
+        if (page.rawFile) return page.rawFile;
+        return urlToBlob(page.url);
+      }
+
       async function nativeOcrCropsBatch(cropJobs) {
         const fd = new FormData();
-        for (let i = 0; i < cropJobs.length; i++) {
-          const job = cropJobs[i];
-          const blob = await cropImageToPngBlob(job.imgEl, job.blk);
-          fd.append('files', blob, 'crop_' + i + '.png');
+        const blobs = await Promise.all(cropJobs.map((job) => cropImageToPngBlob(job.imgEl, job.blk)));
+        for (let i = 0; i < blobs.length; i++) {
+          fd.append('files', blobs[i], 'crop_' + i + '.png');
         }
         const endpoint = state.nativeBackend.url + '/api/ocr_batch';
         const resp = await fetch(endpoint, { method: 'POST', mode: 'cors', body: fd });
         if (!resp.ok) throw new Error('Native OCR HTTP ' + resp.status);
         const data = await resp.json();
         return data.results || [];
+      }
+
+      // High-Speed Zero-JS-Crop Server Pipeline: sends raw page JPEGs/PNGs + box coords directly to Python/CUDA
+      async function nativeExtractPagesChunk(pagesChunk) {
+        const fd = new FormData();
+        fd.append('detector_mode', state.detectorMode);
+        const meta = [];
+        for (let i = 0; i < pagesChunk.length; i++) {
+          const p = pagesChunk[i];
+          const blob = await getPageFileOrBlob(p);
+          fd.append('files', blob, p.name || ('page_' + i + '.jpg'));
+          meta.push({
+            boxes_detected: Boolean(p.boxesDetected),
+            boxes: (p.blocks || []).map((b) => [b.x1, b.y1, b.x2, b.y2, b.conf || 0.9])
+          });
+        }
+        fd.append('meta_json', JSON.stringify(meta));
+        const endpoint = state.nativeBackend.url + '/api/extract_pages_server';
+        const resp = await fetch(endpoint, { method: 'POST', mode: 'cors', body: fd });
+        if (!resp.ok) throw new Error('Server extract HTTP ' + resp.status);
+        return resp.json();
       }
 
       // -----------------------------------------------------------------------
@@ -2432,47 +2521,76 @@ mokuro "/path/to/manga/volume_folder"</pre>
         }
       }
 
+      let lastTranscriptRefreshTs = 0;
+      function throttledRefreshRightPanel(force) {
+        const now = performance.now();
+        if (!force && now - lastTranscriptRefreshTs < 280) return;
+        lastTranscriptRefreshTs = now;
+        renderRightPanel();
+      }
+
       async function runParallelPagesDetectionInternal(pagesToDetect, progressPrefix) {
         if (pagesToDetect.length === 0) return 0;
         let totalBoxes = 0;
 
-        // Fast Path 1: Connected Local Native Python GPU / All-Core Server
+        // Fast Path 1: Connected Local Native Python GPU / All-Core Server (pipelined 16-page chunks)
         if (state.nativeBackend.connected && state.detectorMode !== 'whole-image' && state.detectorMode !== 'bubble-heuristic') {
           try {
-            const chunkSize = 8;
-            let doneCount = 0;
-            for (let start = 0; start < pagesToDetect.length; start += chunkSize) {
-              if (state.abortRequested) throw new Error('ABORTED');
-              const chunk = pagesToDetect.slice(start, start + chunkSize);
-              chunk.forEach((p) => { p.status = 'detecting'; });
-              renderPageList();
-              setProgress(
-                true,
-                progressPrefix + ' via Native Turbo Server (' + doneCount + '/' + pagesToDetect.length + ' pages)…',
-                (doneCount / pagesToDetect.length) * 100
-              );
-              const batchBoxes = await nativeDetectBatch(chunk);
-              chunk.forEach((p, idx) => {
-                const raw = (batchBoxes[idx] && batchBoxes[idx].boxes) || [];
-                const mapped = raw.map((b) => ({
-                  id: 'blk_' + Math.random().toString(36).slice(2, 9),
-                  x1: Math.round(b[0]),
-                  y1: Math.round(b[1]),
-                  x2: Math.round(b[2]),
-                  y2: Math.round(b[3]),
-                  conf: typeof b[4] === 'number' ? b[4] : 0.9,
-                  text: '',
-                  charConf: null
-                }));
-                p.blocks = sortBlocksByReadingOrder(mapped, state.readingOrder);
-                p.boxesDetected = true;
-                p.status = 'detected';
-                p.fullText = '';
-                totalBoxes += p.blocks.length;
-                doneCount++;
-              });
-              renderAll();
+            const chunkSize = 16;
+            const chunks = [];
+            for (let i = 0; i < pagesToDetect.length; i += chunkSize) {
+              chunks.push(pagesToDetect.slice(i, i + chunkSize));
             }
+            let chunkCursor = 0;
+            let doneCount = 0;
+
+            async function detectPipeConsumer() {
+              while (true) {
+                if (state.abortRequested) throw new Error('ABORTED');
+                const cIdx = chunkCursor++;
+                if (cIdx >= chunks.length) return;
+                const chunk = chunks[cIdx];
+                chunk.forEach((p) => {
+                  p.status = 'detecting';
+                  updatePageCardInPlace(p);
+                });
+                setProgress(
+                  true,
+                  progressPrefix + ' via Native Turbo Server (' + doneCount + '/' + pagesToDetect.length + ' pages)…',
+                  (doneCount / pagesToDetect.length) * 100
+                );
+                const batchBoxes = await nativeDetectBatch(chunk);
+                chunk.forEach((p, idx) => {
+                  const raw = (batchBoxes[idx] && batchBoxes[idx].boxes) || [];
+                  const mapped = raw.map((b) => ({
+                    id: 'blk_' + Math.random().toString(36).slice(2, 9),
+                    x1: Math.round(b[0]),
+                    y1: Math.round(b[1]),
+                    x2: Math.round(b[2]),
+                    y2: Math.round(b[3]),
+                    conf: typeof b[4] === 'number' ? b[4] : 0.9,
+                    text: '',
+                    charConf: null
+                  }));
+                  p.blocks = sortBlocksByReadingOrder(mapped, state.readingOrder);
+                  p.boxesDetected = true;
+                  p.status = 'detected';
+                  p.fullText = '';
+                  totalBoxes += p.blocks.length;
+                  doneCount++;
+                  updatePageCardInPlace(p);
+                  if (state.selectedPageId === p.id) renderOverlayBoxes();
+                });
+                setProgress(
+                  true,
+                  progressPrefix + ' via Native Turbo Server (' + doneCount + '/' + pagesToDetect.length + ' pages)…',
+                  (doneCount / pagesToDetect.length) * 100
+                );
+              }
+            }
+
+            // 2 concurrent HTTP chunks keep CPU decode & detector 100% saturated
+            await Promise.all([detectPipeConsumer(), detectPipeConsumer()]);
             return totalBoxes;
           } catch (nativeErr) {
             if (nativeErr && nativeErr.message === 'ABORTED') throw nativeErr;
@@ -2503,7 +2621,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
             if (idx >= pagesToDetect.length) return;
             const page = pagesToDetect[idx];
             page.status = 'detecting';
-            renderPageList();
+            updatePageCardInPlace(page);
 
             setProgress(
               true,
@@ -2524,10 +2642,10 @@ mokuro "/path/to/manga/volume_folder"</pre>
               progressPrefix + ' (' + completed + '/' + pagesToDetect.length + ' done · ' + poolConcurrency + ' parallel threads)…',
               (completed / pagesToDetect.length) * 100
             );
-            renderPageList();
+            updatePageCardInPlace(page);
             if (state.selectedPageId === page.id) {
               renderOverlayBoxes();
-              renderRightPanel();
+              throttledRefreshRightPanel(false);
             }
           }
         }
@@ -2540,6 +2658,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         if (state.isExtracting || targetPages.length === 0) return;
         state.abortRequested = false;
         setExtractingUI(true);
+        await acquireBackgroundKeepAlive();
         const t0 = performance.now();
 
         try {
@@ -2569,6 +2688,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
           }
           setProgress(false);
         } finally {
+          releaseBackgroundKeepAlive();
           setExtractingUI(false);
           renderAll();
         }
@@ -2579,119 +2699,166 @@ mokuro "/path/to/manga/volume_folder"</pre>
         state.abortRequested = false;
         state.activeOcrBlockIds.clear();
         setExtractingUI(true);
+        await acquireBackgroundKeepAlive();
         const t0 = performance.now();
+        let totalExtractedBubbles = 0;
 
         try {
-          // Step 1: Detect any pages that don't have boxes yet in PARALLEL
-          const undetected = targetPages.filter((p) => !p.boxesDetected && (!p.blocks || p.blocks.length === 0));
-          if (undetected.length > 0) {
-            await runParallelPagesDetectionInternal(undetected, 'Stage 1/2: Detecting boxes');
-          }
+          // Ultra-Fast Path A: Whole-Page Pipelined Server Extraction (ZERO JS image decode, ZERO JS canvas.toBlob cropping!)
+          let handledByServerPipeline = false;
+          if (state.nativeBackend.connected && state.ocrEngine === 'manga-ocr' && state.detectorMode !== 'whole-image' && state.detectorMode !== 'bubble-heuristic') {
+            try {
+              // Sort any already-detected boxes into reading order before sending coordinates to server
+              for (const p of targetPages) {
+                if (p.boxesDetected && p.blocks && p.blocks.length > 1) {
+                  p.blocks = sortBlocksByReadingOrder(p.blocks, state.readingOrder);
+                }
+              }
 
-          // Step 2: Sort blocks on every target page and assemble flat lock-free bubble queue across ALL pages
-          const pageImgMap = new Map();
-          const allJobs = [];
-          const remainingPerPage = new Map();
+              const chunkSize = 16;
+              const chunks = [];
+              for (let i = 0; i < targetPages.length; i += chunkSize) {
+                chunks.push(targetPages.slice(i, i + chunkSize));
+              }
 
-          for (let pIdx = 0; pIdx < targetPages.length; pIdx++) {
-            const page = targetPages[pIdx];
-            if (page.blocks && page.blocks.length > 1) {
-              page.blocks = sortBlocksByReadingOrder(page.blocks, state.readingOrder);
-            }
-            if (!page.blocks || page.blocks.length === 0) {
-              page.status = 'done';
-              updatePageFullText(page);
-              continue;
-            }
-            page.status = 'recognizing';
-            remainingPerPage.set(page.id, page.blocks.length);
-            const imgEl = await loadImageElement(page.url);
-            pageImgMap.set(page.id, imgEl);
-            for (let bIdx = 0; bIdx < page.blocks.length; bIdx++) {
-              allJobs.push({ page, imgEl, blk: page.blocks[bIdx] });
-            }
-          }
+              let chunkCursor = 0;
+              let donePages = 0;
 
-          renderAll();
-
-          if (allJobs.length > 0) {
-            // Fast Path A: Native Local Python GPU / Multi-Core Batched OCR
-            let handledByNative = false;
-            if (state.nativeBackend.connected && state.ocrEngine === 'manga-ocr') {
-              try {
-                const batchSize = 24;
-                let completedBubbles = 0;
-                for (let start = 0; start < allJobs.length; start += batchSize) {
+              async function serverPipeConsumer() {
+                while (true) {
                   if (state.abortRequested) throw new Error('ABORTED');
-                  const slice = allJobs.slice(start, start + batchSize);
-                  slice.forEach((j) => state.activeOcrBlockIds.add(j.blk.id));
-                  renderOverlayBoxes();
+                  const cIdx = chunkCursor++;
+                  if (cIdx >= chunks.length) return;
+                  const chunk = chunks[cIdx];
+                  chunk.forEach((p) => {
+                    p.status = p.boxesDetected ? 'recognizing' : 'detecting';
+                    updatePageCardInPlace(p);
+                  });
+
                   setProgress(
                     true,
-                    'Native Batched OCR: ' + completedBubbles + '/' + allJobs.length + ' speech bubbles…',
-                    (completedBubbles / allJobs.length) * 100
+                    'Native GPU Batched Pipeline: ' + donePages + '/' + targetPages.length + ' pages completed…',
+                    (donePages / targetPages.length) * 100
                   );
-                  const batchOut = await nativeOcrCropsBatch(slice);
-                  slice.forEach((j, idx) => {
-                    state.activeOcrBlockIds.delete(j.blk.id);
-                    const r = batchOut[idx] || {};
-                    j.blk.text = r.text || '';
-                    j.blk.charConf = typeof r.conf === 'number' ? r.conf : null;
-                    updatePageFullText(j.page);
-                    const left = (remainingPerPage.get(j.page.id) || 1) - 1;
-                    remainingPerPage.set(j.page.id, left);
-                    if (left <= 0) j.page.status = 'done';
-                    completedBubbles++;
+
+                  const respData = await nativeExtractPagesChunk(chunk);
+                  const outPages = respData.pages || [];
+
+                  chunk.forEach((p, idx) => {
+                    const resP = outPages[idx] || {};
+                    if (!p.boxesDetected) {
+                      const rawBoxes = resP.boxes || [];
+                      const mapped = rawBoxes.map((b, bIdx) => ({
+                        id: 'blk_' + Math.random().toString(36).slice(2, 9),
+                        x1: Math.round(b[0]),
+                        y1: Math.round(b[1]),
+                        x2: Math.round(b[2]),
+                        y2: Math.round(b[3]),
+                        conf: typeof b[4] === 'number' ? b[4] : 0.9,
+                        text: (resP.texts && resP.texts[bIdx]) || '',
+                        charConf: (resP.confs && resP.confs[bIdx]) || null
+                      }));
+                      p.blocks = sortBlocksByReadingOrder(mapped, state.readingOrder);
+                      p.boxesDetected = true;
+                    } else {
+                      const texts = resP.texts || [];
+                      const confs = resP.confs || [];
+                      (p.blocks || []).forEach((blk, bIdx) => {
+                        blk.text = texts[bIdx] !== undefined ? texts[bIdx] : (blk.text || '');
+                        blk.charConf = confs[bIdx] !== undefined ? confs[bIdx] : blk.charConf;
+                      });
+                    }
+                    p.status = 'done';
+                    totalExtractedBubbles += (p.blocks ? p.blocks.length : 0);
+                    updatePageFullText(p);
+                    updatePageCardInPlace(p);
+                    if (state.selectedPageId === p.id) {
+                      renderOverlayBoxes();
+                    }
+                    donePages++;
                   });
-                  renderAll();
+
+                  const pps = (donePages / Math.max(0.1, (performance.now() - t0) / 1000)).toFixed(1);
+                  setProgress(
+                    true,
+                    'Native GPU Batched Pipeline: ' + donePages + '/' + targetPages.length + ' pages (' + pps + ' pages/s)…',
+                    (donePages / targetPages.length) * 100
+                  );
+                  throttledRefreshRightPanel(false);
                 }
-                handledByNative = true;
-              } catch (nativeErr) {
-                if (nativeErr && nativeErr.message === 'ABORTED') throw nativeErr;
-                state.activeOcrBlockIds.clear();
-                state.nativeBackend.connected = false;
-                updateAccelBadgeText();
-                showToast('Native server unavailable; continuing on Browser Multi-Worker Pool.', 'warn');
               }
+
+              // Double-buffered 2-way pipeline overlaps HTTP upload + CPU JPEG decode with RTX Tensor-Core GPU batches
+              await Promise.all([serverPipeConsumer(), serverPipeConsumer()]);
+              handledByServerPipeline = true;
+            } catch (srvErr) {
+              if (srvErr && srvErr.message === 'ABORTED') throw srvErr;
+              state.nativeBackend.connected = false;
+              updateAccelBadgeText();
+              showToast('Native server pipeline unavailable (' + srvErr.message + '); falling back to Browser Workers.', 'warn');
+            }
+          }
+
+          // Fallback Path B: Browser Multi-Worker Pool with Sliding 12-Page Bitmap Window (constant low RAM on 200+ pages!)
+          if (!handledByServerPipeline) {
+            const undetected = targetPages.filter((p) => !p.boxesDetected && (!p.blocks || p.blocks.length === 0));
+            if (undetected.length > 0) {
+              await runParallelPagesDetectionInternal(undetected, 'Stage 1/2: Detecting boxes');
             }
 
-            // Fast Path B: Browser Multi-Worker Pool (N bubbles decoded simultaneously across CPU cores)
-            if (!handledByNative) {
-              if (state.ocrEngine === 'manga-ocr') {
-                await ensureMangaOcrPoolReady();
-              } else {
-                await ensureTesseractPoolReady();
-              }
+            if (state.ocrEngine === 'manga-ocr') {
+              await ensureMangaOcrPoolReady();
+            } else {
+              await ensureTesseractPoolReady();
+            }
+
+            const totalBubblesAll = targetPages.reduce((acc, p) => acc + ((p.blocks && p.blocks.length) || 0), 0);
+            let doneBubblesGlobal = 0;
+            const windowPages = 12;
+
+            for (let wStart = 0; wStart < targetPages.length; wStart += windowPages) {
+              if (state.abortRequested) throw new Error('ABORTED');
+              const pageSlice = targetPages.slice(wStart, wStart + windowPages);
+              const windowJobs = [];
+              const remainingPerPage = new Map();
+
+              // Decode only up to 12 images in parallel for this sliding window so 216+ pages never spike RAM
+              await Promise.all(pageSlice.map(async (page) => {
+                if (page.blocks && page.blocks.length > 1) {
+                  page.blocks = sortBlocksByReadingOrder(page.blocks, state.readingOrder);
+                }
+                if (!page.blocks || page.blocks.length === 0) {
+                  page.status = 'done';
+                  updatePageFullText(page);
+                  updatePageCardInPlace(page);
+                  return;
+                }
+                page.status = 'recognizing';
+                updatePageCardInPlace(page);
+                remainingPerPage.set(page.id, page.blocks.length);
+                const imgEl = await loadImageElement(page.url);
+                for (let bIdx = 0; bIdx < page.blocks.length; bIdx++) {
+                  windowJobs.push({ page, imgEl, blk: page.blocks[bIdx] });
+                }
+              }));
+
+              if (windowJobs.length === 0) continue;
 
               const activeWorkerCount = state.ocrEngine === 'manga-ocr'
-                ? Math.max(1, runtime.workerSlots.filter((s) => s.loaded.mocr).length || 1)
+                ? Math.max(1, runtime.workerSlots.filter((s) => s.loaded.mocr).length || getDesiredPoolSize('mocr'))
                 : Math.max(1, runtime.tesseractWorkers.length || 1);
-              const concurrency = Math.min(allJobs.length, activeWorkerCount);
-
+              const concurrency = Math.min(windowJobs.length, activeWorkerCount);
               let jobCursor = 0;
-              let doneBubbles = 0;
 
               async function bubbleConsumer() {
                 while (true) {
                   if (state.abortRequested) throw new Error('ABORTED');
                   const jIdx = jobCursor++;
-                  if (jIdx >= allJobs.length) return;
-                  const job = allJobs[jIdx];
-                  if (job.blk.text && job.page.status === 'done') {
-                    doneBubbles++;
-                    continue;
-                  }
+                  if (jIdx >= windowJobs.length) return;
+                  const job = windowJobs[jIdx];
 
                   state.activeOcrBlockIds.add(job.blk.id);
-                  if (state.selectedPageId === job.page.id) {
-                    renderOverlayBoxes();
-                  }
-
-                  setProgress(
-                    true,
-                    'Recognizing Japanese (' + doneBubbles + '/' + allJobs.length + ' bubbles · ' + concurrency + ' parallel workers)…',
-                    (doneBubbles / allJobs.length) * 100
-                  );
+                  if (state.selectedPageId === job.page.id) renderOverlayBoxes();
 
                   const res = await recognizeSingleBlock(job.imgEl, job.blk);
                   state.activeOcrBlockIds.delete(job.blk.id);
@@ -2705,18 +2872,17 @@ mokuro "/path/to/manga/volume_folder"</pre>
                     job.page.status = 'done';
                   }
 
-                  doneBubbles++;
+                  doneBubblesGlobal++;
+                  totalExtractedBubbles++;
                   setProgress(
                     true,
-                    'Recognizing Japanese (' + doneBubbles + '/' + allJobs.length + ' bubbles · ' + concurrency + ' parallel workers)…',
-                    (doneBubbles / allJobs.length) * 100
+                    'Recognizing Japanese (' + doneBubblesGlobal + '/' + Math.max(1, totalBubblesAll) + ' bubbles · ' + concurrency + ' parallel workers)…',
+                    (doneBubblesGlobal / Math.max(1, totalBubblesAll)) * 100
                   );
 
-                  renderPageList();
-                  if (state.selectedPageId === job.page.id) {
-                    renderOverlayBoxes();
-                  }
-                  renderRightPanel();
+                  updatePageCardInPlace(job.page);
+                  if (state.selectedPageId === job.page.id) renderOverlayBoxes();
+                  throttledRefreshRightPanel(false);
                 }
               }
 
@@ -2725,8 +2891,8 @@ mokuro "/path/to/manga/volume_folder"</pre>
           }
 
           const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
-          setProgress(true, 'Extracted ' + allJobs.length + ' bubbles across ' + targetPages.length + ' page(s) in ' + elapsed + 's!', 100);
-          showToast('Extracted ' + allJobs.length + ' bubbles across ' + targetPages.length + ' page(s) in ' + elapsed + 's!');
+          setProgress(true, 'Extracted ' + totalExtractedBubbles + ' bubbles across ' + targetPages.length + ' page(s) in ' + elapsed + 's!', 100);
+          showToast('Extracted ' + totalExtractedBubbles + ' bubbles across ' + targetPages.length + ' page(s) in ' + elapsed + 's!');
           setTimeout(() => {
             if (!state.isExtracting) setProgress(false);
           }, 2200);
@@ -2743,6 +2909,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
           }
           setProgress(false);
         } finally {
+          releaseBackgroundKeepAlive();
           state.activeOcrBlockIds.clear();
           setExtractingUI(false);
           renderAll();
@@ -2793,44 +2960,63 @@ mokuro "/path/to/manga/volume_folder"</pre>
           state.isSampleSet = false;
         }
 
-        const newPages = [];
-        for (const file of valid) {
-          const url = URL.createObjectURL(file);
-          let width = 0;
-          let height = 0;
-          try {
-            const im = await loadImageElement(url);
-            width = im.naturalWidth || im.width;
-            height = im.naturalHeight || im.height;
-          } catch (_e) {
-            URL.revokeObjectURL(url);
-            continue;
+        const newPages = new Array(valid.length).fill(null);
+        let ingestIdx = 0;
+        const ingestConcurrency = Math.min(16, valid.length);
+
+        async function ingestWorker() {
+          while (true) {
+            const idx = ingestIdx++;
+            if (idx >= valid.length) return;
+            const file = valid[idx];
+            const url = URL.createObjectURL(file);
+            let width = 0;
+            let height = 0;
+            try {
+              if (typeof window.createImageBitmap === 'function') {
+                const bmp = await window.createImageBitmap(file);
+                width = bmp.width;
+                height = bmp.height;
+                if (typeof bmp.close === 'function') bmp.close();
+              } else {
+                const im = await loadImageElement(url);
+                width = im.naturalWidth || im.width;
+                height = im.naturalHeight || im.height;
+              }
+            } catch (_e) {
+              URL.revokeObjectURL(url);
+              continue;
+            }
+            newPages[idx] = {
+              id: 'page_' + Math.random().toString(36).slice(2, 10),
+              name: file.name,
+              relativePath: file.webkitRelativePath || file.relativePath || file.name,
+              url,
+              rawFile: file,
+              isObjectUrl: true,
+              width,
+              height,
+              status: 'pending',
+              boxesDetected: false,
+              blocks: [],
+              fullText: ''
+            };
           }
-          newPages.push({
-            id: 'page_' + Math.random().toString(36).slice(2, 10),
-            name: file.name,
-            relativePath: file.webkitRelativePath || file.relativePath || file.name,
-            url,
-            isObjectUrl: true,
-            width,
-            height,
-            status: 'pending',
-            boxesDetected: false,
-            blocks: [],
-            fullText: ''
-          });
         }
 
-        if (newPages.length === 0) {
+        await Promise.all(Array.from({ length: ingestConcurrency }, () => ingestWorker()));
+        const loadedPages = newPages.filter(Boolean);
+
+        if (loadedPages.length === 0) {
           showToast('Could not decode selected image files.', 'error');
           return;
         }
 
-        state.pages.push(...newPages);
-        state.selectedPageId = newPages[0].id;
+        state.pages.push(...loadedPages);
+        state.selectedPageId = loadedPages[0].id;
         state.selectedBlockId = null;
         renderAll();
-        showToast('Loaded ' + newPages.length + ' manga page(s). Ready to extract!');
+        showToast('Loaded ' + loadedPages.length + ' manga page(s). Ready to extract!');
       }
 
       // Synchronously capture files, FileSystemEntries, and FileSystemHandles BEFORE any await
@@ -3217,6 +3403,42 @@ mokuro "/path/to/manga/volume_folder"</pre>
         });
       }
 
+      function applyPageStatusBadgeStyle(statusBadge, page) {
+        if (page.status === 'done') {
+          statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800';
+          statusBadge.textContent = 'Extracted';
+        } else if (page.status === 'detecting') {
+          statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 animate-pulse';
+          statusBadge.textContent = 'Detecting…';
+        } else if (page.status === 'recognizing') {
+          statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 animate-pulse';
+          statusBadge.textContent = 'OCR…';
+        } else if (page.boxesDetected) {
+          statusBadge.className = page.blocks.length > 0
+            ? 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200'
+            : 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200';
+          statusBadge.textContent = page.blocks.length + (page.blocks.length === 1 ? ' box' : ' boxes');
+        } else {
+          statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600';
+          statusBadge.textContent = 'Ready';
+        }
+      }
+
+      // O(1) incremental card update so 200+ page volumes never rebuild 200+ DOM nodes on every bubble
+      function updatePageCardInPlace(page) {
+        if (!page) return;
+        const card = el.pageListContainer.querySelector('[data-page-id="' + page.id + '"]');
+        if (!card) return;
+        const badge = card.querySelector('[data-role="status"]');
+        if (badge) applyPageStatusBadgeStyle(badge, page);
+        const prev = card.querySelector('[data-role="preview"]');
+        if (prev) {
+          prev.textContent = page.fullText
+            ? page.fullText.replace(/\n+/g, ' ')
+            : 'Click Extract to read Japanese';
+        }
+      }
+
       function renderPageList() {
         const count = state.pages.length;
         el.pagesSummaryCount.textContent = count + (count === 1 ? ' page loaded' : ' pages loaded');
@@ -3243,6 +3465,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
           const isSelected = page.id === state.selectedPageId;
           const card = document.createElement('div');
           card.setAttribute('data-page-idx', String(idx));
+          card.setAttribute('data-page-id', page.id);
           card.className =
             'group flex items-center gap-2 p-2 rounded-lg border cursor-pointer select-none transition ' +
             (isSelected
@@ -3258,6 +3481,8 @@ mokuro "/path/to/manga/volume_folder"</pre>
           const thumb = document.createElement('img');
           thumb.src = page.url;
           thumb.alt = page.name;
+          thumb.loading = 'lazy';
+          thumb.decoding = 'async';
           thumb.draggable = false;
           thumb.className = 'w-9 h-13 object-cover rounded border border-slate-200 bg-slate-100 shrink-0 pointer-events-none';
 
@@ -3271,24 +3496,8 @@ mokuro "/path/to/manga/volume_folder"</pre>
           numSpan.textContent = '#' + (idx + 1);
 
           const statusBadge = document.createElement('span');
-          if (page.status === 'done') {
-            statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800';
-            statusBadge.textContent = 'Extracted';
-          } else if (page.status === 'detecting') {
-            statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 animate-pulse';
-            statusBadge.textContent = 'Detecting…';
-          } else if (page.status === 'recognizing') {
-            statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 animate-pulse';
-            statusBadge.textContent = 'OCR…';
-          } else if (page.boxesDetected) {
-            statusBadge.className = page.blocks.length > 0
-              ? 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200'
-              : 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200';
-            statusBadge.textContent = page.blocks.length + (page.blocks.length === 1 ? ' box' : ' boxes');
-          } else {
-            statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600';
-            statusBadge.textContent = 'Ready';
-          }
+          statusBadge.setAttribute('data-role', 'status');
+          applyPageStatusBadgeStyle(statusBadge, page);
           titleRow.appendChild(numSpan);
           titleRow.appendChild(statusBadge);
 
@@ -3297,6 +3506,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
           nameP.textContent = page.name;
 
           const previewP = document.createElement('p');
+          previewP.setAttribute('data-role', 'preview');
           previewP.className = 'jp-text text-[11px] text-slate-500 truncate mt-0.5';
           previewP.textContent = page.fullText
             ? page.fullText.replace(/\n+/g, ' ')
