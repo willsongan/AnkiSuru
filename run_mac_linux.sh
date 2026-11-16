@@ -3,7 +3,8 @@ set -e
 cd "$(dirname "$0")"
 
 echo "============================================================"
-echo " Mokuro Turbo Native Server v3 (Full-GPU Detection + OCR)"
+echo " AnkiSuru - Japanese Manga OCR & Study Reader (Local Server)"
+echo " Keep this terminal open while using AnkiSuru!"
 echo "============================================================"
 
 if command -v uv >/dev/null 2>&1; then
@@ -20,13 +21,13 @@ else
 fi
 
 if command -v nvidia-smi >/dev/null 2>&1 && [ "$(uname -s)" = "Linux" ]; then
-  echo "Detected NVIDIA GPU — installing CUDA PyTorch + Transformers + ONNX GPU..."
+  echo "Detected NVIDIA GPU — checking CUDA PyTorch & Transformers..."
   $PIP_INSTALL --upgrade fastapi uvicorn python-multipart pillow numpy onnxruntime-gpu torch transformers huggingface_hub safetensors
 elif [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-  echo "Detected Apple Silicon — installing Metal MPS PyTorch + CoreML packages..."
+  echo "Detected Apple Silicon — checking Metal MPS PyTorch packages..."
   $PIP_INSTALL --upgrade fastapi uvicorn python-multipart pillow numpy onnxruntime torch transformers huggingface_hub safetensors
 else
-  echo "Installing native multi-core C++ ONNX Runtime server packages..."
+  echo "Checking multi-core CPU server packages..."
   $PIP_INSTALL -r requirements.txt
 fi
 

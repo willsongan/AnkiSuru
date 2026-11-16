@@ -1,16 +1,23 @@
-# Mokuro Turbo Local Package v4 (Japanese-Only SOTA `manga-ocr-base-CPT` v2 + Full-GPU Engine)
+# AnkiSuru
 
-This local package runs a native RTX CUDA / Apple Metal MPS / Multi-Core backend on `http://127.0.0.1:7860` paired with the full interactive manga reader & `<90%` OCR review UI.
+**AnkiSuru** is an ongoing project for reading raw Japanese manga and learning Japanese from speech bubbles.
 
-## What's New in v4
-- **Japanese-Only SOTA Model (`muscgab/manga-ocr-base-CPT` v2)**: Trained on 141M Japanese manga crops (6,817 Japanese char vocabulary), cutting Character Error Rate on `JMangaBench_Read` from `4.81%` down to **`0.86%`** (`95.13%` Exact Match; `87.10%` Exact Match on stylized/handwritten `JMangaBench_Hard` vs `31.24%` previously).
-- **Lossless FP32 + Automatic 4-Beam Rescue**: Runs ViT+BERT OCR in full FP32 precision so dakuten (`ば`/`ぱ`/`は`), small kana (`っ`/`ゃ`), and dense kanji strokes never suffer FP16 rounding loss, and automatically runs a second-pass `autocontrast` + `num_beams=4` rescue on any bubble scoring `< 90%`.
-- **`< 90%` Review Highlighting**: Calibrated token-probability confidence highlights any uncertain bubble (`< 90%`) in amber on the manga page, sidebar page list, and Page Bubbles review queue.
+> **Project Status (Work in Progress):** Automatic Anki flashcard creation is the long-term end goal of this project and is still far away. Right now, AnkiSuru focuses on **manga reading, Japanese OCR extraction, and Gemini-powered English translation, Romaji, and vocabulary/grammar breakdowns**.
 
 ## Quick Start
-- **Windows (NVIDIA RTX/GTX, AMD, Intel)**: Double-click `run_windows.bat`.
-- **macOS / Linux**:
-  ```bash
-  chmod +x run_mac_linux.sh
-  ./run_mac_linux.sh
-  ```
+
+1. Install **Python 3.10–3.12** from [Python Downloads](https://www.python.org/downloads/) — on Windows, make sure to check **"Add python.exe to PATH"** on the first installer screen.
+2. Start the local server:
+   - **Windows:** Double-click **`run_windows.bat`** *(if Windows shows a SmartScreen prompt, click **More info → Run anyway**)*.
+   - **Mac / Linux:** Run `chmod +x run_mac_linux.sh && ./run_mac_linux.sh` in Terminal.
+3. Wait a few minutes on the **very first launch** while it sets up `.venv` and downloads the AI models (~500 MB). Your browser will open automatically at `http://127.0.0.1:7860` — keep the console window open in the background while using the app.
+
+## What You Can Do Right Now
+
+- **Load & Read Manga:** Drop a folder or page images into the left sidebar and flip pages by clicking the side margins, swiping, or using arrow keys.
+- **Extract Japanese Text:** Click **Extract All Japanese Text** to detect speech bubbles and read the Japanese dialogue (non-Japanese/empty boxes are filtered out automatically, and `<90%` uncertain reads are highlighted in yellow for quick review).
+- **Translate & Break Down Grammar (Gemini API):** Paste a free API key from [Google AI Studio](https://aistudio.google.com/apikey) into **Settings** (saved locally in your browser), then click **EN + Romaji** or **Vocab & Grammar** on any bubble in **Page Bubbles**.
+
+## Credits
+
+Built with open-source manga models [muscgab/manga-ocr-base-CPT](https://huggingface.co/muscgab/manga-ocr-base-CPT) ([kha-white/manga-ocr](https://github.com/kha-white/manga-ocr)) and [ogkalu/comic-text-and-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector).

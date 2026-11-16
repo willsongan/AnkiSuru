@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mokuro Turbo Native Server v4 — Japanese-Only SOTA Manga OCR (`muscgab/manga-ocr-base-CPT` v2).
+"""AnkiSuru Local Server v4 — Japanese-Only SOTA Manga OCR (`muscgab/manga-ocr-base-CPT` v2).
 
 Key v4 Japanese-Only OCR Accuracy & Confidence Calibration Upgrades:
   1. Upgraded Default Model to `muscgab/manga-ocr-base-CPT` v2 (Japanese-Only, 111M params, 6,817 JP
@@ -20,8 +20,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import copy
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import queue
@@ -31,7 +33,38 @@ import threading
 import time
 from typing import Any, Callable
 import urllib.request
+import warnings
 import webbrowser
+
+warnings.filterwarnings("ignore", message=".*max_new_tokens.*max_length.*")
+
+
+class _SuppressMaxTokensWarningFilter(logging.Filter):
+  def filter(self, record: logging.LogRecord) -> bool:
+    msg = record.getMessage()
+    if "max_new_tokens" in msg and "max_length" in msg:
+      return False
+    return True
+
+
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+_MAX_TOK_LOG_FILTER = _SuppressMaxTokensWarningFilter()
+
+
+def _quiet_transformers_loggers() -> None:
+  for lname in (
+      "transformers",
+      "transformers.generation",
+      "transformers.generation.utils",
+      "transformers.generation.configuration_utils",
+  ):
+    lg = logging.getLogger(lname)
+    lg.addFilter(_MAX_TOK_LOG_FILTER)
+    for h in lg.handlers:
+      h.addFilter(_MAX_TOK_LOG_FILTER)
+
+
+_quiet_transformers_loggers()
 
 from fastapi import FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,6 +82,23 @@ HAS_HF_HUB = False
 try:
   import torch
   from transformers import VisionEncoderDecoderModel
+  try:
+    from transformers.utils import logging as hf_logging
+
+    hf_logging.set_verbosity_error()
+    for _hf_lname in (
+        "transformers",
+        "transformers.generation",
+        "transformers.generation.utils",
+        "transformers.generation.configuration_utils",
+    ):
+      _hlg = hf_logging.get_logger(_hf_lname)
+      _hlg.addFilter(_MAX_TOK_LOG_FILTER)
+      for _h in _hlg.handlers:
+        _h.addFilter(_MAX_TOK_LOG_FILTER)
+    _quiet_transformers_loggers()
+  except Exception:
+    pass
 
   try:
     from transformers import GenerationMixin
@@ -89,7 +139,9 @@ except Exception:
   HAS_HF_HUB = False
 
 BASE_DIR = Path(__file__).resolve().parent
-CACHE_DIR = Path(os.environ.get("MOKURO_TURBO_CACHE", Path.home() / ".cache" / "mokuro_turbo"))
+_LEGACY_CACHE_DIR = Path.home() / ".cache" / "mokuro_turbo"
+_DEFAULT_CACHE_DIR = _LEGACY_CACHE_DIR if _LEGACY_CACHE_DIR.exists() else (Path.home() / ".cache" / "ankisuru")
+CACHE_DIR = Path(os.environ.get("ANKISURU_CACHE", os.environ.get("MOKURO_TURBO_CACHE", _DEFAULT_CACHE_DIR)))
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 OCR_REPO_MAP = {
@@ -171,8 +223,8 @@ def ensure_cached_file(filename: str, primary_url: str, fallback_url: str | None
     last_err = None
     for url in urls:
       try:
-        print(f"[Mokuro Turbo] Downloading {filename} ...")
-        req = urllib.request.Request(url, headers={"User-Agent": "MokuroTurbo/4.0"})
+        print(f"[AnkiSuru] Downloading {filename} ...")
+        req = urllib.request.Request(url, headers={"User-Agent": "AnkiSuru/4.0"})
         with urllib.request.urlopen(req, timeout=240) as resp, open(tmp, "wb") as out:
           while True:
             chunk = resp.read(1024 * 1024)
@@ -180,7 +232,7 @@ def ensure_cached_file(filename: str, primary_url: str, fallback_url: str | None
               break
             out.write(chunk)
         tmp.replace(dest)
-        print(f"[Mokuro Turbo] Cached {filename} ({dest.stat().st_size / 1048576:.1f} MB)")
+        print(f"[AnkiSuru] Cached {filename} ({dest.stat().st_size / 1048576:.1f} MB)")
         return dest
       except Exception as err:
         last_err = err
@@ -230,6 +282,74 @@ def compute_calibrated_bubble_conf(char_probs: list[float]) -> float:
   return float(round(max(0.0, min(1.0, 0.65 * mean_p + 0.35 * min_p)), 4))
 
 
+_JP_HIRAGANA_RE = re.compile(r"[\u3041-\u3096\u309D-\u309F]")
+_JP_KATAKANA_RE = re.compile(r"[\u30A1-\u30FA\u30FD-\u30FF]")
+_JP_KANJI_RE = re.compile(r"[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3005]")
+_LATIN_ALPHA_RE = re.compile(r"[A-Za-z\uFF21-\uFF3A\uFF41-\uFF5A]")
+_STROKE_ARTIFACT_ONLY_RE = re.compile(r"^[一二三川十口日ノハソンリヘくしつっー｜丨・/\\+=\-_.,…！？!?0-9０-９]+$")
+
+
+def is_valid_japanese_manga_ocr(text: str, conf: float) -> bool:
+  """Rejects empty space, icons/symbols, drawings/line-art hallucinations, and English text."""
+  s = (text or "").strip()
+  if not s:
+    return False
+
+  hira = len(_JP_HIRAGANA_RE.findall(s))
+  kata = len(_JP_KATAKANA_RE.findall(s))
+  kanji = len(_JP_KANJI_RE.findall(s))
+  jp_core = hira + kata + kanji
+  latin = len(_LATIN_ALPHA_RE.findall(s))
+
+  # 1. Must contain at least 1 real Japanese script character (eliminates pure English, numbers, icons, '！？', '…')
+  if jp_core == 0:
+    return False
+
+  # 2. Reject full/predominant English text where 1-2 stylized English letters were misread as lookalike katakana
+  if latin >= 4 and latin > jp_core * 1.5:
+    return False
+  if latin >= 2 and hira == 0 and latin >= jp_core and conf < 0.86:
+    return False
+
+  # 3. Reject low-confidence hallucinations dreamed up on drawings, icons, or empty screentones
+  if conf < 0.52:
+    return False
+
+  # 4. Reject line-art / hatching / border stroke hallucinations ('一', '川', 'ノ', '口', etc.)
+  if jp_core <= 2 and _STROKE_ARTIFACT_ONLY_RE.match(s) and conf < 0.86:
+    return False
+
+  # 5. Reject single-character icon/art misreads unless model is genuinely confident
+  if jp_core == 1 and len(s) <= 2 and conf < 0.72:
+    return False
+
+  return True
+
+
+def is_plausible_text_crop_visual(crop: Image.Image) -> bool:
+  """Fast pixel-level pre-filter rejecting blank space, flat screentone, and solid black/icon fills."""
+  w, h = crop.size
+  if w < 12 or h < 12:
+    return False
+  aspect = max(w / max(1.0, float(h)), h / max(1.0, float(w)))
+  if aspect > 22.0:
+    return False
+
+  thumb = np.asarray(crop.convert("L").resize((64, 64), Image.Resampling.BILINEAR), dtype=np.float32)
+  if float(np.std(thumb)) < 8.5:
+    return False
+  p05, p95 = np.percentile(thumb, [5, 95])
+  if float(p95 - p05) < 42.0:
+    return False
+
+  mid = 0.5 * float(p05 + p95)
+  dark_ratio = float(np.mean(thumb < mid))
+  # Blank empty space has almost no ink; solid black fills/frames are nearly all dark
+  if dark_ratio < 0.008 or dark_ratio > 0.82:
+    return False
+  return True
+
+
 def merge_nested_boxes(boxes: list[list[float]]) -> list[list[float]]:
   """Merge ONLY genuinely nested/duplicate boxes — NEVER fuse two separate neighboring speech bubbles!"""
   items = [list(b) for b in boxes]
@@ -265,30 +385,30 @@ def _filter_rtdetr_predictions(
     orig_h: int,
 ) -> list[list[float]]:
   text_boxes: list[list[float]] = []
-  bubble_fallback: list[list[float]] = []
   for i in range(len(scores_np)):
     sc = float(scores_np[i])
-    if sc < 0.32:
-      continue
     lbl = int(labels_np[i])
+    # Require explicit text class: lbl=1 (text_bubble >= 0.38) or lbl=2 (text_free >= 0.46).
+    # Never box lbl=0 (empty balloon outline without text), avoiding silent reaction bubbles & icons!
+    if lbl == 1 and sc < 0.38:
+      continue
+    if lbl == 2 and sc < 0.46:
+      continue
+    if lbl not in (1, 2):
+      continue
     bx = boxes_np[i]
     bw = max(1.0, float(bx[2]) - float(bx[0]))
     bh = max(1.0, float(bx[3]) - float(bx[1]))
-    # Proportional dakuten-safe padding (protects rightmost vertical ゛/゜ strokes from clipping!)
     pad_x = max(5.0, min(18.0, bw * 0.055))
     pad_y = max(5.0, min(18.0, bh * 0.045))
     x1 = max(0.0, float(bx[0]) - pad_x)
     y1 = max(0.0, float(bx[1]) - pad_y)
     x2 = min(float(orig_w), float(bx[2]) + pad_x)
     y2 = min(float(orig_h), float(bx[3]) + pad_y)
-    if x2 - x1 < 10 or y2 - y1 < 10:
+    if x2 - x1 < 14 or y2 - y1 < 14:
       continue
-    if lbl in (1, 2):
-      text_boxes.append([x1, y1, x2, y2, sc])
-    elif lbl == 0 and sc >= 0.48:
-      bubble_fallback.append([x1, y1, x2, y2, sc])
-  chosen = text_boxes if text_boxes else bubble_fallback
-  return merge_nested_boxes(chosen)
+    text_boxes.append([x1, y1, x2, y2, sc])
+  return merge_nested_boxes(text_boxes)
 
 
 if HAS_LOGITS_PROCESSOR:
@@ -364,7 +484,7 @@ class HybridDetectorEngine:
       if self._torch_det_failed:
         return False
       try:
-        print(f"[Mokuro Turbo] Loading ogkalu/comic-text-and-bubble-detector onto {self.torch_device.upper()}...")
+        print(f"[AnkiSuru] Loading ogkalu/comic-text-and-bubble-detector onto {self.torch_device.upper()}...")
         self.processor = _from_pretrained_fast(AutoImageProcessor, "ogkalu/comic-text-and-bubble-detector")
         self.det_model = _from_pretrained_fast(AutoModelForObjectDetection, "ogkalu/comic-text-and-bubble-detector")
         self.det_model.to(self.torch_device)
@@ -399,11 +519,11 @@ class HybridDetectorEngine:
 
         prec = "FP16 Tensor-Core" if self._use_fp16_det else "CUDA FP32"
         self.det_label = f"PyTorch {prec} Batched RT-DETRv2"
-        print(f"[Mokuro Turbo] Detector GPU Warmup complete ({self.det_label}, batch={self.det_batch_size})!")
+        print(f"[AnkiSuru] Detector GPU Warmup complete ({self.det_label}, batch={self.det_batch_size})!")
         self._torch_det_ready = True
         return True
       except Exception as err:
-        print(f"[Mokuro Turbo] Note: PyTorch GPU detector fell back to ONNX ({err})")
+        print(f"[AnkiSuru] Note: PyTorch GPU detector fell back to ONNX ({err})")
         self._torch_det_failed = True
         return False
 
@@ -581,6 +701,19 @@ class HybridDetectorEngine:
     finally:
       q.put(sess)
 
+  @staticmethod
+  def _prune_empty_visual_boxes(page_im: Image.Image, boxes: list[list[float]]) -> list[list[float]]:
+    w, h = page_im.size
+    kept: list[list[float]] = []
+    for b in boxes:
+      x1 = max(0, min(w - 1, int(round(b[0]))))
+      y1 = max(0, min(h - 1, int(round(b[1]))))
+      x2 = max(x1 + 1, min(w, int(round(b[2]))))
+      y2 = max(y1 + 1, min(h, int(round(b[3]))))
+      if is_plausible_text_crop_visual(page_im.crop((x1, y1, x2, y2))):
+        kept.append(b)
+    return kept
+
   def detect_batch(
       self,
       images: list[Image.Image],
@@ -590,9 +723,11 @@ class HybridDetectorEngine:
     if not images or (is_cancelled and is_cancelled()):
       return [[] for _ in images]
     if mode != "ctd-onnx" and self.ensure_torch_detector_loaded():
-      return self._detect_batch_torch_gpu(images, is_cancelled=is_cancelled)
-    futures = [self.executor.submit(self._detect_one_onnx, im, mode, is_cancelled) for im in images]
-    return [f.result() for f in futures]
+      raw_batches = self._detect_batch_torch_gpu(images, is_cancelled=is_cancelled)
+    else:
+      futures = [self.executor.submit(self._detect_one_onnx, im, mode, is_cancelled) for im in images]
+      raw_batches = [f.result() for f in futures]
+    return [self._prune_empty_visual_boxes(im, bxs) for im, bxs in zip(images, raw_batches)]
 
 
 def _preprocess_crop_224(crop: Image.Image) -> np.ndarray:
@@ -612,9 +747,8 @@ def _preprocess_crop_224_autocontrast(crop: Image.Image) -> np.ndarray:
 
 
 def _has_visible_ink(crop: Image.Image) -> bool:
-  """Reject near-solid empty white/black crops so manga-ocr never dreams up fake Japanese sentences."""
-  gray_small = np.asarray(crop.convert("L").resize((48, 48), Image.Resampling.BILINEAR), dtype=np.float32)
-  return float(np.std(gray_small)) >= 6.5
+  """Reject empty white/black space, flat screentones, and solid fills before OCR."""
+  return is_plausible_text_crop_visual(crop)
 
 
 class HybridMangaOcrEngine:
@@ -668,21 +802,44 @@ class HybridMangaOcrEngine:
       with self._init_lock:
         if norm_key in self._loaded_torch_models:
           return
-        print(f"[Mokuro Turbo] Loading Japanese-only SOTA OCR '{repo_id}' onto {self.accelerator_label}...")
+        print(f"[AnkiSuru] Loading Japanese-only SOTA OCR '{repo_id}' onto {self.accelerator_label}...")
         try:
           model = _from_pretrained_fast(_MangaVisionEncoderDecoder, repo_id)
           vocab = _load_repo_vocab_list(repo_id)
         except Exception as err:
           if norm_key == "manga-ocr-cpt":
-            print(f"[Mokuro Turbo] Note: '{repo_id}' unavailable ({err}); falling back to kha-white/manga-ocr-base.")
+            print(f"[AnkiSuru] Note: '{repo_id}' unavailable ({err}); falling back to kha-white/manga-ocr-base.")
             repo_id = OCR_REPO_MAP["manga-ocr"]
             model = _from_pretrained_fast(_MangaVisionEncoderDecoder, repo_id)
             vocab = _load_repo_vocab_list(repo_id)
           else:
             raise
+        for _sub_cfg in (
+            model.config,
+            getattr(model.config, "decoder", None),
+            getattr(model.config, "encoder", None),
+        ):
+          if _sub_cfg is not None and hasattr(_sub_cfg, "max_length"):
+            _sub_cfg.max_length = None
         model.config.eos_token_id = 3
         model.config.pad_token_id = 0
         model.config.decoder_start_token_id = 2
+        gen_cfg = getattr(model, "generation_config", None)
+        if gen_cfg is not None:
+          gen_cfg.eos_token_id = 3
+          gen_cfg.pad_token_id = 0
+          gen_cfg.decoder_start_token_id = 2
+          # Clear checkpoint's preset max_length=300 so max_new_tokens never conflicts or spams CMD logs
+          try:
+            test_cfg = copy.deepcopy(gen_cfg)
+            test_cfg.max_length = None
+            test_cfg.max_new_tokens = 40
+            if hasattr(test_cfg, "validate"):
+              test_cfg.validate()
+            gen_cfg.max_length = None
+          except Exception:
+            gen_cfg._from_model_config = True
+        _quiet_transformers_loggers()
         model.to(self.torch_device)
         model.eval()
         if HAS_LOGITS_PROCESSOR and self._logits_processors is None:
@@ -692,7 +849,7 @@ class HybridMangaOcrEngine:
           with self._gpu_lock, torch.inference_mode():
             dummy = torch.zeros((2, 3, 224, 224), dtype=torch.float32, device=self.torch_device)
             model.generate(dummy, max_new_tokens=6, num_beams=1, do_sample=False, use_cache=True, eos_token_id=3, pad_token_id=0)
-        print(f"[Mokuro Turbo] '{repo_id}' ready ({len(vocab):,} JP vocab tokens, FP32 precision)!")
+        print(f"[AnkiSuru] '{repo_id}' ready ({len(vocab):,} JP vocab tokens, FP32 precision)!")
         self._loaded_torch_models[norm_key] = (model, vocab)
         return
 
@@ -709,7 +866,7 @@ class HybridMangaOcrEngine:
           vocab_path = ensure_cached_file("vocab_cpt_v2.txt", MODEL_URLS["mocr_cpt_vocab"])
           used_cpt = True
         except Exception as err:
-          print(f"[Mokuro Turbo] CPT ONNX fallback to base ONNX ({err})")
+          print(f"[AnkiSuru] CPT ONNX fallback to base ONNX ({err})")
       if not used_cpt:
         enc_path = ensure_cached_file("encoder_model_quantized.onnx", MODEL_URLS["mocr_enc_q8"])
         dec_path = ensure_cached_file("decoder_model_merged_quantized.onnx", MODEL_URLS["mocr_dec_q8"])
@@ -996,7 +1153,7 @@ def _decode_bytes_to_rgb(raw: bytes) -> Image.Image:
 
 
 def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) -> FastAPI:
-  app = FastAPI(title="Mokuro Turbo Native Server v4")
+  app = FastAPI(title="AnkiSuru Local Server")
   shared_gpu_lock = threading.Lock()
   ocr_engine = HybridMangaOcrEngine(
       num_workers=workers,
@@ -1035,7 +1192,7 @@ def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) 
         det_engine.ensure_torch_detector_loaded()
       ocr_engine.ensure_loaded("manga-ocr-cpt")
     except Exception as err:
-      print(f"[Mokuro Turbo] Background warmup note: {err}")
+      print(f"[AnkiSuru] Background warmup note: {err}")
     finally:
       warmup_state["warming_up"] = False
 
@@ -1071,7 +1228,7 @@ def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) 
     html_path = BASE_DIR / "static" / "index.html"
     if html_path.exists():
       return FileResponse(str(html_path), media_type="text/html")
-    return JSONResponse({"ok": True, "message": "Mokuro Turbo API v4 running."})
+    return JSONResponse({"ok": True, "message": "AnkiSuru Local Server running."})
 
   @app.get("/api/health")
   async def health() -> dict[str, Any]:
@@ -1097,7 +1254,7 @@ def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) 
     with cancel_lock:
       cancel_state["epoch"] += 1
       ep = cancel_state["epoch"]
-    print(f"[Mokuro Turbo] Stop signal received (epoch={ep}) — aborting in-flight GPU/CPU work immediately.")
+    print(f"[AnkiSuru] Stop signal received (epoch={ep}) — aborting in-flight GPU/CPU work immediately.")
     return {"ok": True, "cancelled_epoch": ep}
 
   def _sync_detect_batch(
@@ -1155,6 +1312,7 @@ def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) 
       ocr_model: str,
       meta_json: str,
       is_cancelled: Callable[[], bool],
+      auto_prune: bool = True,
   ) -> dict[str, Any]:
     if is_cancelled():
       return {"ok": False, "cancelled": True, "pages": []}
@@ -1207,32 +1365,60 @@ def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) 
       return {"ok": False, "cancelled": True, "pages": []}
     t_ocr = time.perf_counter() - t_ocr0
 
-    low_conf_count = sum(1 for r in ocr_results if r["text"] and r["conf"] < LOW_CONF_THRESHOLD)
     pages_out: list[dict[str, Any]] = []
+    pruned_false_boxes = 0
+    kept_bubbles = 0
+    low_conf_count = 0
     offset = 0
+
     for i, boxes in enumerate(page_boxes_list):
       cnt = crop_counts[i]
       slice_res = ocr_results[offset : offset + cnt]
       offset += cnt
+      page_meta = meta[i] if i < len(meta) and isinstance(meta[i], dict) else {}
+      manual_flags = page_meta.get("manual_flags") or []
+
+      kept_boxes: list[list[float]] = []
+      kept_texts: list[str] = []
+      kept_confs: list[float] = []
+      kept_indices: list[int] = []
+
+      for b_idx, (bx, r) in enumerate(zip(boxes, slice_res)):
+        is_manual = bool(b_idx < len(manual_flags) and manual_flags[b_idx])
+        if auto_prune and not is_manual and not is_valid_japanese_manga_ocr(r["text"], r["conf"]):
+          pruned_false_boxes += 1
+          continue
+        kept_boxes.append(bx)
+        kept_texts.append(r["text"])
+        kept_confs.append(r["conf"])
+        kept_indices.append(b_idx)
+        kept_bubbles += 1
+        if r["text"] and r["conf"] < LOW_CONF_THRESHOLD:
+          low_conf_count += 1
+
       pages_out.append({
-          "boxes": boxes,
-          "texts": [r["text"] for r in slice_res],
-          "confs": [r["conf"] for r in slice_res],
+          "boxes": kept_boxes,
+          "texts": kept_texts,
+          "confs": kept_confs,
+          "kept_indices": kept_indices,
+          "pruned_count": len(boxes) - len(kept_boxes),
       })
 
     dt = max(0.001, time.perf_counter() - t0)
     print(
-        f"[Turbo v4] {len(pil_pages)} pages ({len(all_crops)} bubbles, {low_conf_count} <90% review) "
-        f"in {dt:.2f}s ({len(pil_pages)/dt:.1f} pages/s) | det={t_det:.2f}s ocr={t_ocr:.2f}s | {ocr_model}"
+        f"[AnkiSuru] {len(pil_pages)} pages ({kept_bubbles} JP bubbles kept, {pruned_false_boxes} non-JP/false pruned, "
+        f"{low_conf_count} <90% review) in {dt:.2f}s ({len(pil_pages)/dt:.1f} pages/s) | det={t_det:.2f}s ocr={t_ocr:.2f}s"
     )
     return {
         "ok": True,
         "pages": pages_out,
+        "pruned_count": pruned_false_boxes,
         "timing": {
             "total_s": round(dt, 3),
             "decode_s": round(t_decode, 3),
             "det_s": round(t_det, 3),
             "ocr_s": round(t_ocr, 3),
+            "pruned_count": pruned_false_boxes,
             "low_conf_count": low_conf_count,
             "accelerator": ocr_engine.accelerator_label,
         },
@@ -1244,20 +1430,22 @@ def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) 
       files: list[UploadFile] = File(...),
       detector_mode: str = Form("rtdetr-int8"),
       ocr_model: str = Form("manga-ocr-cpt"),
+      auto_prune_non_jp: str = Form("true"),
       meta_json: str = Form("[]"),
   ) -> dict[str, Any]:
     start_epoch = cancel_state["epoch"]
     raw_list = [await up.read() for up in files]
+    auto_prune = str(auto_prune_non_jp).lower() not in ("false", "0", "no")
     is_cancelled = lambda: cancel_state["epoch"] != start_epoch
     return await asyncio.to_thread(
-        _sync_extract_pages_chunk, raw_list, detector_mode, ocr_model, meta_json, is_cancelled
+        _sync_extract_pages_chunk, raw_list, detector_mode, ocr_model, meta_json, is_cancelled, auto_prune
     )
 
   return app
 
 
 def main() -> None:
-  parser = argparse.ArgumentParser(description="Mokuro Turbo Local Multi-Core / GPU Server v4")
+  parser = argparse.ArgumentParser(description="AnkiSuru Local GPU / Multi-Core Server")
   parser.add_argument("--host", default="127.0.0.1")
   parser.add_argument("--port", type=int, default=7860)
   parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Parallel CPU worker threads")
@@ -1269,7 +1457,7 @@ def main() -> None:
   app = build_app(workers=max(1, args.workers), force_onnx=args.onnx_only, gpu_batch_size=max(4, args.batch_size))
   url = f"http://{args.host}:{args.port}"
   print(f"\n========================================================")
-  print(f" Mokuro Turbo Native Server v4 listening at {url}")
+  print(f" AnkiSuru Local Server listening at {url}")
   print(f" Default Japanese-Only OCR: muscgab/manga-ocr-base-CPT v2 (0.86% CER)")
   print(f" CPU Cores: {CPU_CORES} | Worker Pool: {args.workers} | GPU Batch: {args.batch_size}")
   print(f"========================================================\n")
