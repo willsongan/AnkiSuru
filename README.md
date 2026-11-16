@@ -1,29 +1,16 @@
-# Mokuro Turbo Local Package (Multi-Core C++ & GPU Batched Manga OCR)
+# Mokuro Turbo Local Package v4 (Japanese-Only SOTA `manga-ocr-base-CPT` v2 + Full-GPU Engine)
 
-This local package removes browser WebAssembly limits by running a native multi-core C++ ONNX Runtime / PyTorch GPU backend on `http://127.0.0.1:7860` paired with the full interactive web UI.
+This local package runs a native RTX CUDA / Apple Metal MPS / Multi-Core backend on `http://127.0.0.1:7860` paired with the full interactive manga reader & `<90%` OCR review UI.
 
-## Quick Start (1 Click / 1 Command)
+## What's New in v4
+- **Japanese-Only SOTA Model (`muscgab/manga-ocr-base-CPT` v2)**: Trained on 141M Japanese manga crops (6,817 Japanese char vocabulary), cutting Character Error Rate on `JMangaBench_Read` from `4.81%` down to **`0.86%`** (`95.13%` Exact Match; `87.10%` Exact Match on stylized/handwritten `JMangaBench_Hard` vs `31.24%` previously).
+- **Lossless FP32 + Automatic 4-Beam Rescue**: Runs ViT+BERT OCR in full FP32 precision so dakuten (`ば`/`ぱ`/`は`), small kana (`っ`/`ゃ`), and dense kanji strokes never suffer FP16 rounding loss, and automatically runs a second-pass `autocontrast` + `num_beams=4` rescue on any bubble scoring `< 90%`.
+- **`< 90%` Review Highlighting**: Calibrated token-probability confidence highlights any uncertain bubble (`< 90%`) in amber on the manga page, sidebar page list, and Page Bubbles review queue.
 
+## Quick Start
 - **Windows (NVIDIA RTX/GTX, AMD, Intel)**: Double-click `run_windows.bat`.
-  - Automatically detects NVIDIA GPUs (including RTX 2060 / 30xx / 40xx laptops via `nvidia-smi`), installs CUDA `torch` from PyTorch's wheel index **and** `transformers` from PyPI in separate steps, and opens `http://127.0.0.1:7860`.
 - **macOS / Linux**:
   ```bash
   chmod +x run_mac_linux.sh
   ./run_mac_linux.sh
   ```
-
-## Manual NVIDIA CUDA Install (Windows `.venv`)
-
-Important: Do **not** put `transformers` on the same `--index-url` line as `torch`, because `download.pytorch.org` only hosts PyTorch wheels (not PyPI packages like `transformers`). Run them as two separate commands:
-
-```bat
-.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu126
-.venv\Scripts\python.exe -m pip install transformers huggingface_hub
-```
-*(If your Python version is 3.13+, `cu126` or `cu128` provides prebuilt Windows wheels supporting Turing `sm_75` RTX 2060 through Blackwell GPUs.)*
-
-## Custom Worker Thread Count
-
-```bash
-.venv\Scripts\python.exe server.py --workers 6 --port 7860
-```

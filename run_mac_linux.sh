@@ -3,7 +3,7 @@ set -e
 cd "$(dirname "$0")"
 
 echo "============================================================"
-echo " Mokuro Turbo Native Server (Multi-Core + GPU Accelerator)"
+echo " Mokuro Turbo Native Server v3 (Full-GPU Detection + OCR)"
 echo "============================================================"
 
 if command -v uv >/dev/null 2>&1; then
@@ -20,11 +20,11 @@ else
 fi
 
 if command -v nvidia-smi >/dev/null 2>&1 && [ "$(uname -s)" = "Linux" ]; then
-  echo "Detected NVIDIA GPU — installing onnxruntime-gpu + server packages..."
-  $PIP_INSTALL fastapi uvicorn python-multipart pillow numpy onnxruntime-gpu
+  echo "Detected NVIDIA GPU — installing CUDA PyTorch + Transformers + ONNX GPU..."
+  $PIP_INSTALL --upgrade fastapi uvicorn python-multipart pillow numpy onnxruntime-gpu torch transformers huggingface_hub safetensors
 elif [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-  echo "Detected Apple Silicon — installing Metal MPS + CoreML server packages..."
-  $PIP_INSTALL fastapi uvicorn python-multipart pillow numpy onnxruntime torch transformers
+  echo "Detected Apple Silicon — installing Metal MPS PyTorch + CoreML packages..."
+  $PIP_INSTALL --upgrade fastapi uvicorn python-multipart pillow numpy onnxruntime torch transformers huggingface_hub safetensors
 else
   echo "Installing native multi-core C++ ONNX Runtime server packages..."
   $PIP_INSTALL -r requirements.txt

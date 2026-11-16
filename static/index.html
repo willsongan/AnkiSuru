@@ -90,6 +90,16 @@
       pointer-events: none;
       z-index: 2;
     }
+    .bbox-rect.needs-review {
+      border-color: #d97706;
+      border-width: 2.5px;
+      background-color: rgba(245, 158, 11, 0.16);
+      box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.28);
+      z-index: 18;
+    }
+    .bbox-rect.needs-review .bbox-badge {
+      background: #d97706;
+    }
     .bbox-rect.active .bbox-badge {
       background: #e11d48;
     }
@@ -302,10 +312,11 @@
             </label>
 
             <label class="flex items-center gap-1.5 text-slate-600 font-medium">
-              <span class="whitespace-nowrap">OCR Engine:</span>
+              <span class="whitespace-nowrap">Japanese OCR:</span>
               <select id="selectOcrEngine" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="manga-ocr" selected>kha-white/manga-ocr ONNX (Best · ~117 MB)</option>
-                <option value="tesseract-jpn">Tesseract.js v5 jpn_vert (Fast Download · ~15 MB)</option>
+                <option value="manga-ocr-cpt" selected>manga-ocr-base-CPT v2 (Japanese-Only SOTA · 0.86% CER)</option>
+                <option value="manga-ocr">kha-white/manga-ocr-base (Classic Japanese · 4.81% CER)</option>
+                <option value="tesseract-jpn">Tesseract.js v5 jpn_vert (Lightweight Fallback · ~15 MB)</option>
               </select>
             </label>
 
@@ -559,8 +570,9 @@
           <button id="tabBtnAllText" type="button" class="px-2.5 py-1.5 rounded-md bg-white text-slate-900 shadow-sm transition">
             Full Manga Text
           </button>
-          <button id="tabBtnPageBubbles" type="button" class="px-2.5 py-1.5 rounded-md text-slate-600 hover:text-slate-900 transition">
-            Page Bubbles (<span id="currentBubbleCountBadge">0</span>)
+          <button id="tabBtnPageBubbles" type="button" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-slate-600 hover:text-slate-900 transition">
+            <span>Page Bubbles (<span id="currentBubbleCountBadge">0</span>)</span>
+            <span id="lowConfTabBadge" class="hidden px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500 text-white" title="Bubbles with OCR confidence below 90% needing review"></span>
           </button>
         </div>
 
@@ -634,9 +646,9 @@
             </thead>
             <tbody class="divide-y divide-slate-100">
               <tr>
-                <td class="py-2 pr-3 font-semibold"><a href="https://github.com/kha-white/mokuro" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">kha-white/mokuro</a> + <a href="https://github.com/kha-white/manga-ocr" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">manga-ocr</a></td>
-                <td class="py-2 px-3 whitespace-nowrap">1.8k &amp; 2.8k ★ · GPL-3.0 / Apache-2.0</td>
-                <td class="py-2 pl-3"><strong>Chosen OCR architecture.</strong> Highest Japanese bubble accuracy (vertical/horizontal + furigana), running in a non-blocking Web Worker (~117 MB q8 ONNX).</td>
+                <td class="py-2 pr-3 font-semibold"><a href="https://huggingface.co/muscgab/manga-ocr-base-CPT" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">muscgab/manga-ocr-base-CPT (v2)</a> + <a href="https://github.com/kha-white/manga-ocr" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">manga-ocr</a></td>
+                <td class="py-2 px-3 whitespace-nowrap">0.86% CER · Japanese-Only</td>
+                <td class="py-2 pl-3"><strong>Default Japanese-Only SOTA OCR.</strong> Trained on 141M manga crops (6,817 JP char vocab), cutting Character Error Rate 5.6× from 4.81% to <strong>0.86%</strong> (95.13% Exact Match on JMangaBench_Read; 87.10% EM on Hard SFX/handwriting).</td>
               </tr>
               <tr>
                 <td class="py-2 pr-3 font-semibold"><a href="https://huggingface.co/ogkalu/comic-text-and-bubble-detector" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">ogkalu/comic-text-and-bubble-detector</a></td>
@@ -693,7 +705,14 @@ mokuro "/path/to/manga/volume_folder"</pre>
       }
 
       // Verified Hugging Face ONNX & Vocab URLs
+      const LOW_CONF_THRESHOLD = 0.90;
+
       const MODEL_URLS = {
+        mocrCptEncoder: 'https://huggingface.co/Quien1/manga-ocr-base-CPT-v2-ONNX/resolve/main/onnx/encoder_model_quantized.onnx',
+        mocrCptEncoderAlt: 'https://huggingface.co/Quien1/manga-ocr-base-CPT-v2-ONNX/resolve/main/onnx/encoder_model_q8.onnx',
+        mocrCptDecoder: 'https://huggingface.co/Quien1/manga-ocr-base-CPT-v2-ONNX/resolve/main/onnx/decoder_model_merged_quantized.onnx',
+        mocrCptDecoderAlt: 'https://huggingface.co/Quien1/manga-ocr-base-CPT-v2-ONNX/resolve/main/onnx/decoder_model_merged_q8.onnx',
+        mocrCptVocab: 'https://huggingface.co/Quien1/manga-ocr-base-CPT-v2-ONNX/resolve/main/vocab.txt',
         mocrEncoder: 'https://huggingface.co/kimchireader/manga-ocr-onnx-q8/resolve/main/onnx/encoder_model_quantized.onnx',
         mocrDecoder: 'https://huggingface.co/kimchireader/manga-ocr-onnx-q8/resolve/main/onnx/decoder_model_merged_quantized.onnx',
         mocrVocab: 'https://huggingface.co/kha-white/manga-ocr-base/resolve/main/vocab.txt',
@@ -701,6 +720,31 @@ mokuro "/path/to/manga/volume_folder"</pre>
         rtdetrInt8Mirror: 'https://huggingface.co/Sundowner123/comic-text-and-bubble-detector/resolve/main/detector.onnx',
         ctdOnnx: 'https://huggingface.co/HighLiuk/japanese-onnx-models/resolve/main/comictextdetector.onnx'
       };
+
+      function isMangaOcrFamily(engineName) {
+        return engineName === 'manga-ocr-cpt' || engineName === 'manga-ocr';
+      }
+
+      function isBlockBelowReviewThreshold(blk, page) {
+        if (!blk || blk.verified) return false;
+        const hasTxt = Boolean((blk.text || '').trim());
+        if (hasTxt && typeof blk.charConf === 'number') {
+          return blk.charConf < LOW_CONF_THRESHOLD;
+        }
+        if (page && page.status === 'done' && !hasTxt) {
+          return true;
+        }
+        return false;
+      }
+
+      function countPageReviewBlocks(page) {
+        if (!page || !Array.isArray(page.blocks)) return 0;
+        return page.blocks.filter((b) => isBlockBelowReviewThreshold(b, page)).length;
+      }
+
+      function countVolumeReviewBlocks() {
+        return state.pages.reduce((acc, p) => acc + countPageReviewBlocks(p), 0);
+      }
 
       const IMAGE_EXT_RE = /\.(jpe?g|jfif|pjpeg|pjp|png|webp|avif|bmp|gif)$/i;
       const naturalCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
@@ -717,7 +761,8 @@ mokuro "/path/to/manga/volume_folder"</pre>
         activeOcrBlockIds: new Set(),
         isSampleSet: false,
         detectorMode: 'rtdetr-int8',
-        ocrEngine: 'manga-ocr',
+        ocrEngine: 'manga-ocr-cpt',
+        filterLowConfOnly: false,
         readingOrder: 'rtl',
         workerPoolSetting: 'auto', // 'auto' | '1'..'8'
         nativeBackend: {
@@ -748,8 +793,9 @@ mokuro "/path/to/manga/volume_folder"</pre>
       // Multi-Worker Parallel Pool & Cached ML Runtimes
       const runtime = {
         buffers: {},
-        mocrVocab: null,
-        mocrVocabPromise: null,
+        mocrVocabs: {},
+        mocrVocabPromises: {},
+        activeMocrVariant: null,
         bufferPromises: {},
         workerFlavor: null, // 'module' | 'classic' | 'none'
         workerSlots: [],
@@ -758,7 +804,8 @@ mokuro "/path/to/manga/volume_folder"</pre>
         mainFallbackSessions: { rtdetr: null, ctd: null, mocrEnc: null, mocrDec: null },
         hasWebGpu: false,
         tesseractScheduler: null,
-        tesseractWorkers: []
+        tesseractWorkers: [],
+        activeFetchControllers: new Set()
       };
 
       // DOM Elements
@@ -840,6 +887,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         tabBtnAllText: document.getElementById('tabBtnAllText'),
         tabBtnPageBubbles: document.getElementById('tabBtnPageBubbles'),
         currentBubbleCountBadge: document.getElementById('currentBubbleCountBadge'),
+        lowConfTabBadge: document.getElementById('lowConfTabBadge'),
         btnCopyAllText: document.getElementById('btnCopyAllText'),
         btnDownloadTxt: document.getElementById('btnDownloadTxt'),
         btnDownloadJson: document.getElementById('btnDownloadJson'),
@@ -1543,6 +1591,29 @@ mokuro "/path/to/manga/volume_folder"</pre>
         }
       }
 
+      function isAbortError(err) {
+        if (state.abortRequested) return true;
+        if (!err) return false;
+        return err.message === 'ABORTED' || err.name === 'AbortError';
+      }
+
+      async function fetchAbortable(url, options) {
+        if (state.abortRequested) throw new Error('ABORTED');
+        const ctrl = new AbortController();
+        runtime.activeFetchControllers.add(ctrl);
+        try {
+          const merged = Object.assign({}, options || {}, { signal: ctrl.signal });
+          const resp = await fetch(url, merged);
+          if (state.abortRequested) throw new Error('ABORTED');
+          return resp;
+        } catch (err) {
+          if (isAbortError(err)) throw new Error('ABORTED');
+          throw err;
+        } finally {
+          runtime.activeFetchControllers.delete(ctrl);
+        }
+      }
+
       async function fetchWithProgressCached(cacheKey, url, label, basePct, spanPct) {
         const cached = await idbGet(cacheKey);
         if (cached && cached.byteLength > 1024) {
@@ -1550,7 +1621,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
           return cached;
         }
         setProgress(true, 'Downloading ' + label + ' (cached after 1st load)…', basePct);
-        const resp = await fetch(url, { mode: 'cors' });
+        const resp = await fetchAbortable(url, { mode: 'cors' });
         if (!resp.ok) {
           throw new Error('Failed to download ' + label + ' (HTTP ' + resp.status + ')');
         }
@@ -1564,7 +1635,14 @@ mokuro "/path/to/manga/volume_folder"</pre>
         const chunks = [];
         let received = 0;
         while (true) {
-          const { done, value } = await reader.read();
+          let readRes;
+          try {
+            readRes = await reader.read();
+          } catch (readErr) {
+            if (isAbortError(readErr)) throw new Error('ABORTED');
+            throw readErr;
+          }
+          const { done, value } = readRes;
           if (done) break;
           if (state.abortRequested) {
             try { await reader.cancel(); } catch (_e) { /* ignore */ }
@@ -1929,7 +2007,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
               const areaB = (b.x2 - b.x1) * (b.y2 - b.y1);
               const minArea = Math.min(areaA, areaB);
               const iou = inter / (areaA + areaB - inter);
-              if (inter / minArea > 0.72 || iou > 0.42) {
+              if (inter / minArea >= 0.86 || iou >= 0.68) {
                 a.x1 = Math.min(a.x1, b.x1);
                 a.y1 = Math.min(a.y1, b.y1);
                 a.x2 = Math.max(a.x2, b.x2);
@@ -1980,20 +2058,23 @@ mokuro "/path/to/manga/volume_folder"</pre>
         "  const count = scores.length;",
         "  const textBoxes = [];",
         "  const bubbleFallback = [];",
-        "  const padPx = 3;",
         "  for (let i = 0; i < count; i++) {",
         "    const sc = Number(scores[i]);",
-        "    if (sc < 0.30) continue;",
+        "    if (sc < 0.32) continue;",
         "    const lbl = Number(labels[i]);",
         "    const bOff = i * 4;",
-        "    const x1 = Math.max(0, Number(boxes[bOff]) - padPx);",
-        "    const y1 = Math.max(0, Number(boxes[bOff + 1]) - padPx);",
-        "    const x2 = Math.min(origW, Number(boxes[bOff + 2]) + padPx);",
-        "    const y2 = Math.min(origH, Number(boxes[bOff + 3]) + padPx);",
-        "    if (x2 - x1 < 8 || y2 - y1 < 8) continue;",
+        "    const bw = Math.max(1, Number(boxes[bOff + 2]) - Number(boxes[bOff]));",
+        "    const bh = Math.max(1, Number(boxes[bOff + 3]) - Number(boxes[bOff + 1]));",
+        "    const padX = Math.max(5, Math.min(18, bw * 0.055));",
+        "    const padY = Math.max(5, Math.min(18, bh * 0.045));",
+        "    const x1 = Math.max(0, Number(boxes[bOff]) - padX);",
+        "    const y1 = Math.max(0, Number(boxes[bOff + 1]) - padY);",
+        "    const x2 = Math.min(origW, Number(boxes[bOff + 2]) + padX);",
+        "    const y2 = Math.min(origH, Number(boxes[bOff + 3]) + padY);",
+        "    if (x2 - x1 < 10 || y2 - y1 < 10) continue;",
         "    if (lbl === 1 || lbl === 2) {",
         "      textBoxes.push({ x1, y1, x2, y2, conf: sc });",
-        "    } else if (lbl === 0 && sc >= 0.45) {",
+        "    } else if (lbl === 0 && sc >= 0.48) {",
         "      bubbleFallback.push({ x1, y1, x2, y2, conf: sc });",
         "    }",
         "  }",
@@ -2159,13 +2240,13 @@ mokuro "/path/to/manga/volume_folder"</pre>
         "      return;",
         "    }",
         "    if (msg.type === 'init_mocr') {",
-        "      if (!mocrEnc) {",
+        "      if (!mocrEnc || msg.forceReload) {",
         "        mocrEnc = await ort.InferenceSession.create(msg.encBuf, {",
         "          executionProviders: ['wasm'],",
         "          graphOptimizationLevel: 'all'",
         "        });",
         "      }",
-        "      if (!mocrDec) {",
+        "      if (!mocrDec || msg.forceReload) {",
         "        mocrDec = await ort.InferenceSession.create(msg.decBuf, {",
         "          executionProviders: ['wasm'],",
         "          graphOptimizationLevel: 'all'",
@@ -2221,7 +2302,9 @@ mokuro "/path/to/manga/volume_folder"</pre>
         "          if (tail.every((t) => t === tail[0])) break;",
         "        }",
         "      }",
-        "      const avgConf = probs.length > 0 ? probs.reduce((a, b) => a + b, 0) / probs.length : 0;",
+        "      const meanP = probs.length > 0 ? probs.reduce((a, b) => a + b, 0) / probs.length : 0;",
+        "      const minP = probs.length > 0 ? Math.min(...probs) : 0;",
+        "      const avgConf = probs.length > 0 ? Math.max(0, Math.min(1, 0.65 * meanP + 0.35 * minP)) : 0;",
         "      self.postMessage({ reqId, ok: true, ids, avgConf });",
         "      return;",
         "    }",
@@ -2393,24 +2476,31 @@ mokuro "/path/to/manga/volume_folder"</pre>
       function releaseSlot(slot) {
         slot.busy = false;
         while (runtime.slotWaiters.length > 0) {
-          const nextResolve = runtime.slotWaiters.shift();
+          const waiter = runtime.slotWaiters.shift();
+          if (state.abortRequested) {
+            try { waiter.reject(new Error('ABORTED')); } catch (_e) { /* ignore */ }
+            continue;
+          }
           if (!slot.busy) {
             slot.busy = true;
-            nextResolve(slot);
+            waiter.resolve(slot);
             return;
           }
         }
       }
 
       function acquireWorkerSlot(maxSlotsAllowed) {
+        if (state.abortRequested) {
+          return Promise.reject(new Error('ABORTED'));
+        }
         const usable = runtime.workerSlots.slice(0, maxSlotsAllowed);
         const free = usable.find((s) => !s.busy);
         if (free) {
           free.busy = true;
           return Promise.resolve(free);
         }
-        return new Promise((resolve) => {
-          runtime.slotWaiters.push(resolve);
+        return new Promise((resolve, reject) => {
+          runtime.slotWaiters.push({ resolve, reject });
         });
       }
 
@@ -2418,13 +2508,55 @@ mokuro "/path/to/manga/volume_folder"</pre>
         for (const slot of runtime.workerSlots) {
           try { slot.worker.terminate(); } catch (_e) { /* ignore */ }
           for (const [, entry] of slot.pending) {
-            entry.reject(new Error('ABORTED'));
+            try { entry.reject(new Error('ABORTED')); } catch (_e) { /* ignore */ }
           }
           slot.pending.clear();
         }
         runtime.workerSlots = [];
-        runtime.slotWaiters = [];
+
+        // Reject ALL queued slotWaiters so Promise.all consumers never deadlock on Stop!
+        const waiting = runtime.slotWaiters.splice(0, runtime.slotWaiters.length);
+        for (const waiter of waiting) {
+          try { waiter.reject(new Error('ABORTED')); } catch (_e) { /* ignore */ }
+        }
+
+        // Also terminate active Tesseract workers if Tesseract mode was mid-run
+        if (runtime.tesseractScheduler) {
+          try { runtime.tesseractScheduler.terminate(); } catch (_e) { /* ignore */ }
+          runtime.tesseractScheduler = null;
+          runtime.tesseractWorkers = [];
+        }
+
         state.activeOcrBlockIds.clear();
+      }
+
+      function triggerImmediateStop() {
+        if (!state.isExtracting || state.abortRequested) return;
+        state.abortRequested = true;
+
+        // 1. Instant 0ms visual feedback on Stop button & progress strip
+        const stopSpan = el.btnStopExtract ? el.btnStopExtract.querySelector('span') : null;
+        if (stopSpan) stopSpan.textContent = 'Stopping…';
+        if (el.btnStopExtract) el.btnStopExtract.disabled = true;
+        setProgress(true, 'Stopping immediately…', 100);
+
+        // 2. Abort all active HTTP sockets (Native Turbo Server chunks & weight downloads)
+        for (const ctrl of Array.from(runtime.activeFetchControllers)) {
+          try { ctrl.abort(); } catch (_e) { /* ignore */ }
+        }
+        runtime.activeFetchControllers.clear();
+
+        // 3. Signal Local Native Turbo Server to halt active CUDA/CPU batch immediately
+        if (state.nativeBackend.connected && state.nativeBackend.url) {
+          fetch(state.nativeBackend.url + '/api/cancel', {
+            method: 'POST',
+            mode: 'cors',
+            keepalive: true
+          }).catch(() => {});
+        }
+
+        // 4. Terminate browser workers & reject all pending slot promises
+        terminateAiWorkerForStop();
       }
 
       // Deduplicated shared buffer downloader so N parallel workers never download the same file twice
@@ -2473,12 +2605,26 @@ mokuro "/path/to/manga/volume_folder"</pre>
             state.nativeBackend.connected = true;
             state.nativeBackend.info = info;
             if (el.backendStatusText) {
-              el.backendStatusText.className = 'text-[11px] font-semibold text-emerald-700';
-              el.backendStatusText.textContent = 'Connected: ' + (info.accelerator || 'Native Multi-Core/GPU') + ' (' + (info.workers || HW_CORES) + ' native threads)';
+              if (info.gpu_warning) {
+                el.backendStatusText.className = 'text-[11px] font-semibold text-amber-700';
+                el.backendStatusText.textContent = 'CPU Mode Warning: ' + info.gpu_warning;
+              } else {
+                const detNote = info.det_accelerator ? ' + ' + info.det_accelerator : '';
+                el.backendStatusText.className = 'text-[11px] font-semibold text-emerald-700';
+                el.backendStatusText.textContent =
+                  'Connected: ' + (info.accelerator || 'Native GPU') + detNote;
+              }
             }
             updateAccelBadgeText();
             if (typeof updateSettingsSummaryChip === 'function') updateSettingsSummaryChip();
-            if (!silent) showToast('Connected to Local Native Turbo Server (' + (info.accelerator || 'Active') + ')!');
+            if (info.gpu_warning) {
+              showToast('NVIDIA GPU found without CUDA PyTorch — run updated run_windows.bat for 25x speedup!', 'warn');
+            } else if (!silent) {
+              showToast('Connected to Local Native Turbo Server (' + (info.accelerator || 'Active') + ')!');
+            }
+            if (info.warming_up) {
+              setTimeout(() => { probeNativeBackend(cleanUrl, true); }, 2500);
+            }
             return true;
           }
         } catch (_e) {
@@ -2527,9 +2673,10 @@ mokuro "/path/to/manga/volume_folder"</pre>
           fd.append('files', blob, pagesSubset[i].name || ('page_' + i + '.png'));
         }
         const endpoint = state.nativeBackend.url + '/api/detect_batch';
-        const resp = await fetch(endpoint, { method: 'POST', mode: 'cors', body: fd });
+        const resp = await fetchAbortable(endpoint, { method: 'POST', mode: 'cors', body: fd });
         if (!resp.ok) throw new Error('Native detect HTTP ' + resp.status);
         const data = await resp.json();
+        if (data && data.cancelled) throw new Error('ABORTED');
         return data.pages || [];
       }
 
@@ -2604,14 +2751,16 @@ mokuro "/path/to/manga/volume_folder"</pre>
 
       async function nativeOcrCropsBatch(cropJobs) {
         const fd = new FormData();
+        fd.append('ocr_model', state.ocrEngine);
         const blobs = await Promise.all(cropJobs.map((job) => cropImageToPngBlob(job.imgEl, job.blk)));
         for (let i = 0; i < blobs.length; i++) {
           fd.append('files', blobs[i], 'crop_' + i + '.png');
         }
         const endpoint = state.nativeBackend.url + '/api/ocr_batch';
-        const resp = await fetch(endpoint, { method: 'POST', mode: 'cors', body: fd });
+        const resp = await fetchAbortable(endpoint, { method: 'POST', mode: 'cors', body: fd });
         if (!resp.ok) throw new Error('Native OCR HTTP ' + resp.status);
         const data = await resp.json();
+        if (data && data.cancelled) throw new Error('ABORTED');
         return data.results || [];
       }
 
@@ -2619,6 +2768,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
       async function nativeExtractPagesChunk(pagesChunk) {
         const fd = new FormData();
         fd.append('detector_mode', state.detectorMode);
+        fd.append('ocr_model', state.ocrEngine);
         const meta = [];
         for (let i = 0; i < pagesChunk.length; i++) {
           const p = pagesChunk[i];
@@ -2631,9 +2781,11 @@ mokuro "/path/to/manga/volume_folder"</pre>
         }
         fd.append('meta_json', JSON.stringify(meta));
         const endpoint = state.nativeBackend.url + '/api/extract_pages_server';
-        const resp = await fetch(endpoint, { method: 'POST', mode: 'cors', body: fd });
+        const resp = await fetchAbortable(endpoint, { method: 'POST', mode: 'cors', body: fd });
         if (!resp.ok) throw new Error('Server extract HTTP ' + resp.status);
-        return resp.json();
+        const data = await resp.json();
+        if (data && data.cancelled) throw new Error('ABORTED');
+        return data;
       }
 
       // -----------------------------------------------------------------------
@@ -2934,58 +3086,113 @@ mokuro "/path/to/manga/volume_folder"</pre>
       // -----------------------------------------------------------------------
       // OCR Engine 1: kha-white/manga-ocr ONNX (Parallel Multi-Worker Pool)
       // -----------------------------------------------------------------------
-      async function ensureMangaOcrPoolReady() {
-        if (!runtime.mocrVocab) {
-          if (!runtime.mocrVocabPromise) {
-            runtime.mocrVocabPromise = (async () => {
-              const cachedVocab = await idbGet('mocr_vocab_v1');
-              if (cachedVocab && Array.isArray(cachedVocab) && cachedVocab.length > 1000) {
-                runtime.mocrVocab = cachedVocab;
-              } else {
-                setProgress(true, 'Fetching kha-white/manga-ocr Japanese vocabulary (6,144 tokens)…', 5);
-                const vResp = await fetch(MODEL_URLS.mocrVocab, { mode: 'cors' });
-                if (!vResp.ok) throw new Error('Failed to load manga-ocr vocab.txt');
-                const vText = await vResp.text();
-                runtime.mocrVocab = vText.split(/\r?\n/);
-                await idbPut('mocr_vocab_v1', runtime.mocrVocab);
+      async function loadMocrVocabForVariant(variant) {
+        const isCpt = variant === 'manga-ocr-cpt';
+        const idbKey = isCpt ? 'mocr_cpt_v2_vocab' : 'mocr_vocab_v1';
+        const url = isCpt ? MODEL_URLS.mocrCptVocab : MODEL_URLS.mocrVocab;
+        if (runtime.mocrVocabs[variant]) return runtime.mocrVocabs[variant];
+        if (!runtime.mocrVocabPromises[variant]) {
+          runtime.mocrVocabPromises[variant] = (async () => {
+            try {
+              const cached = await idbGet(idbKey);
+              if (cached && Array.isArray(cached) && cached.length > 1000) {
+                runtime.mocrVocabs[variant] = cached;
+                return cached;
               }
-            })();
+              setProgress(true, 'Fetching Japanese OCR vocabulary (' + (isCpt ? '6,817' : '6,144') + ' tokens)…', 5);
+              const vResp = await fetchAbortable(url, { mode: 'cors' });
+              if (!vResp.ok) throw new Error('Vocab HTTP ' + vResp.status);
+              const vText = await vResp.text();
+              const lines = vText.split(/\r?\n/);
+              runtime.mocrVocabs[variant] = lines;
+              await idbPut(idbKey, lines);
+              return lines;
+            } finally {
+              delete runtime.mocrVocabPromises[variant];
+            }
+          })();
+        }
+        return runtime.mocrVocabPromises[variant];
+      }
+
+      async function ensureMangaOcrPoolReady() {
+        let variant = state.ocrEngine === 'manga-ocr' ? 'manga-ocr' : 'manga-ocr-cpt';
+        let encKey = variant === 'manga-ocr-cpt' ? 'mocr_cpt_enc_q8_v2' : 'mocr_enc_q8_v1';
+        let decKey = variant === 'manga-ocr-cpt' ? 'mocr_cpt_dec_q8_v2' : 'mocr_dec_q8_v1';
+        let encBuf = null;
+        let decBuf = null;
+
+        if (variant === 'manga-ocr-cpt') {
+          try {
+            await loadMocrVocabForVariant('manga-ocr-cpt');
+            encBuf = await getCachedBufferInMemory(
+              encKey,
+              MODEL_URLS.mocrCptEncoder,
+              MODEL_URLS.mocrCptEncoderAlt,
+              'manga-ocr-base-CPT v2 ViT Encoder',
+              8,
+              48
+            );
+            decBuf = await getCachedBufferInMemory(
+              decKey,
+              MODEL_URLS.mocrCptDecoder,
+              MODEL_URLS.mocrCptDecoderAlt,
+              'manga-ocr-base-CPT v2 Japanese Decoder',
+              58,
+              26
+            );
+          } catch (cptErr) {
+            if (isAbortError(cptErr)) throw new Error('ABORTED');
+            variant = 'manga-ocr';
+            encKey = 'mocr_enc_q8_v1';
+            decKey = 'mocr_dec_q8_v1';
           }
-          await runtime.mocrVocabPromise;
         }
 
-        const encBuf = await getCachedBufferInMemory(
-          'mocr_enc_q8_v1',
-          MODEL_URLS.mocrEncoder,
-          null,
-          'manga-ocr ViT Encoder (87 MB)',
-          8,
-          48
-        );
-        const decBuf = await getCachedBufferInMemory(
-          'mocr_dec_q8_v1',
-          MODEL_URLS.mocrDecoder,
-          null,
-          'manga-ocr Japanese Decoder (30 MB)',
-          58,
-          26
-        );
+        if (!encBuf || !decBuf) {
+          await loadMocrVocabForVariant('manga-ocr');
+          encBuf = await getCachedBufferInMemory(
+            encKey,
+            MODEL_URLS.mocrEncoder,
+            null,
+            'manga-ocr ViT Encoder (87 MB)',
+            8,
+            48
+          );
+          decBuf = await getCachedBufferInMemory(
+            decKey,
+            MODEL_URLS.mocrDecoder,
+            null,
+            'manga-ocr Japanese Decoder (30 MB)',
+            58,
+            26
+          );
+        }
+
+        runtime.activeMocrVariant = variant;
+        runtime.activeMocrEncKey = encKey;
+        runtime.activeMocrDecKey = decKey;
 
         const targetWorkers = getDesiredPoolSize('mocr');
         const activeCount = await ensureWorkerPoolSize(targetWorkers);
         if (activeCount > 0) {
           const usable = runtime.workerSlots.slice(0, targetWorkers);
-          const uninit = usable.filter((s) => !s.loaded.mocr);
+          const uninit = usable.filter((s) => s.loaded.mocrVariant !== variant);
           if (uninit.length > 0) {
-            setProgress(true, 'Initializing manga-ocr across ' + usable.length + ' parallel workers…', 88);
+            setProgress(true, 'Initializing Japanese OCR across ' + usable.length + ' parallel workers…', 88);
             for (const slot of uninit) {
               try {
                 const encCopy = encBuf.slice(0);
                 const decCopy = decBuf.slice(0);
-                await callSlot(slot, { type: 'init_mocr', encBuf: encCopy, decBuf: decCopy }, [encCopy, decCopy]);
+                await callSlot(
+                  slot,
+                  { type: 'init_mocr', encBuf: encCopy, decBuf: decCopy, forceReload: Boolean(slot.loaded.mocr) },
+                  [encCopy, decCopy]
+                );
                 slot.loaded.mocr = true;
+                slot.loaded.mocrVariant = variant;
               } catch (_oomErr) {
-                if (usable.some((s) => s.loaded.mocr)) break;
+                if (usable.some((s) => s.loaded.mocrVariant === variant)) break;
                 throw _oomErr;
               }
             }
@@ -2993,15 +3200,14 @@ mokuro "/path/to/manga/volume_folder"</pre>
           return 'pool';
         }
 
-        if (!runtime.mainFallbackSessions.mocrEnc) {
+        if (!runtime.mainFallbackSessions.mocrEnc || runtime.mainFallbackSessions.variant !== variant) {
           runtime.mainFallbackSessions.mocrEnc = await window.ort.InferenceSession.create(encBuf.slice(0), {
             executionProviders: ['wasm']
           });
-        }
-        if (!runtime.mainFallbackSessions.mocrDec) {
           runtime.mainFallbackSessions.mocrDec = await window.ort.InferenceSession.create(decBuf.slice(0), {
             executionProviders: ['wasm']
           });
+          runtime.mainFallbackSessions.variant = variant;
         }
         return 'main';
       }
@@ -3009,16 +3215,18 @@ mokuro "/path/to/manga/volume_folder"</pre>
       function postProcessMangaOcrText(rawStr) {
         if (!rawStr) return '';
         let s = rawStr.replace(/\s+/g, '');
-        s = s.replace(/\.{2,}/g, '…').replace(/．{2,}/g, '…');
-        s = s.replace(/!/g, '！').replace(/\?/g, '？');
+        s = s.replace(/[・.．]{2,}/g, '…');
+        // Convert half-width ASCII punctuation/digits/letters to full-width Japanese forms
+        s = s.replace(/[!-~]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + 0xFEE0));
         return s.trim();
       }
 
       function decodeTokenIdsToJapanese(ids) {
+        const vocab = runtime.mocrVocabs[runtime.activeMocrVariant || 'manga-ocr'] || [];
         const special = new Set(['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]', '']);
         const chars = [];
         for (let i = 1; i < ids.length; i++) {
-          let tok = runtime.mocrVocab[ids[i]] || '';
+          let tok = vocab[ids[i]] || '';
           if (special.has(tok)) continue;
           if (tok.startsWith('##')) tok = tok.slice(2);
           chars.push(tok);
@@ -3060,11 +3268,17 @@ mokuro "/path/to/manga/volume_folder"</pre>
           const maxSlots = getDesiredPoolSize('mocr');
           const slot = await acquireWorkerSlot(maxSlots);
           try {
-            if (!slot.loaded.mocr) {
-              const encCopy = runtime.buffers['mocr_enc_q8_v1'].slice(0);
-              const decCopy = runtime.buffers['mocr_dec_q8_v1'].slice(0);
-              await callSlot(slot, { type: 'init_mocr', encBuf: encCopy, decBuf: decCopy }, [encCopy, decCopy]);
+            const activeVar = runtime.activeMocrVariant || 'manga-ocr';
+            if (slot.loaded.mocrVariant !== activeVar) {
+              const encCopy = runtime.buffers[runtime.activeMocrEncKey].slice(0);
+              const decCopy = runtime.buffers[runtime.activeMocrDecKey].slice(0);
+              await callSlot(
+                slot,
+                { type: 'init_mocr', encBuf: encCopy, decBuf: decCopy, forceReload: Boolean(slot.loaded.mocr) },
+                [encCopy, decCopy]
+              );
               slot.loaded.mocr = true;
+              slot.loaded.mocrVariant = activeVar;
             }
             const res = await callSlot(slot, { type: 'run_mocr', inputBuf: pixelValues.buffer }, [pixelValues.buffer]);
             return {
@@ -3121,7 +3335,9 @@ mokuro "/path/to/manga/volume_folder"</pre>
           ids.push(bestId);
           probs.push(sumExp > 0 ? 1.0 / sumExp : 0);
         }
-        const avgConf = probs.length > 0 ? probs.reduce((a, b) => a + b, 0) / probs.length : 0;
+        const meanP = probs.length > 0 ? probs.reduce((a, b) => a + b, 0) / probs.length : 0;
+        const minP = probs.length > 0 ? Math.min(...probs) : 0;
+        const avgConf = probs.length > 0 ? Math.max(0, Math.min(1, 0.65 * meanP + 0.35 * minP)) : 0;
         return { text: decodeTokenIdsToJapanese(ids), charConf: avgConf };
       }
 
@@ -3179,11 +3395,12 @@ mokuro "/path/to/manga/volume_folder"</pre>
               return { text: batchOut[0].text || '', charConf: batchOut[0].conf || null };
             }
           } catch (_e) {
+            if (isAbortError(_e)) throw new Error('ABORTED');
             state.nativeBackend.connected = false;
             updateAccelBadgeText();
           }
         }
-        if (state.ocrEngine === 'manga-ocr') {
+        if (isMangaOcrFamily(state.ocrEngine)) {
           return recognizeCropMangaOcr(imgEl, box);
         }
         return recognizeCropTesseract(imgEl, box);
@@ -3209,6 +3426,9 @@ mokuro "/path/to/manga/volume_folder"</pre>
         el.btnExtractAll.disabled = running || noPages;
         el.btnExtractPage.disabled = running || !getSelectedPage();
         el.btnRedetectPage.disabled = running || !getSelectedPage();
+        const stopSpan = el.btnStopExtract ? el.btnStopExtract.querySelector('span') : null;
+        if (stopSpan) stopSpan.textContent = 'Stop';
+        el.btnStopExtract.disabled = false;
         if (running) {
           el.btnStopExtract.classList.remove('hidden');
           el.btnStopExtract.classList.add('inline-flex');
@@ -3234,10 +3454,10 @@ mokuro "/path/to/manga/volume_folder"</pre>
         if (pagesToDetect.length === 0) return 0;
         let totalBoxes = 0;
 
-        // Fast Path 1: Connected Local Native Python GPU / All-Core Server (pipelined 16-page chunks)
+        // Fast Path 1: Connected Local Native Python GPU / All-Core Server (pipelined 8-page chunks)
         if (state.nativeBackend.connected && state.detectorMode !== 'whole-image' && state.detectorMode !== 'bubble-heuristic') {
           try {
-            const chunkSize = 16;
+            const chunkSize = 8;
             const chunks = [];
             for (let i = 0; i < pagesToDetect.length; i += chunkSize) {
               chunks.push(pagesToDetect.slice(i, i + chunkSize));
@@ -3294,7 +3514,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
             await Promise.all([detectPipeConsumer(), detectPipeConsumer()]);
             return totalBoxes;
           } catch (nativeErr) {
-            if (nativeErr && nativeErr.message === 'ABORTED') throw nativeErr;
+            if (isAbortError(nativeErr)) throw new Error('ABORTED');
             state.nativeBackend.connected = false;
             updateAccelBadgeText();
             showToast('Native server disconnected; switched to Browser Multi-Worker Pool.', 'warn');
@@ -3407,7 +3627,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         try {
           // Ultra-Fast Path A: Whole-Page Pipelined Server Extraction (ZERO JS image decode, ZERO JS canvas.toBlob cropping!)
           let handledByServerPipeline = false;
-          if (state.nativeBackend.connected && state.ocrEngine === 'manga-ocr' && state.detectorMode !== 'whole-image' && state.detectorMode !== 'bubble-heuristic') {
+          if (state.nativeBackend.connected && isMangaOcrFamily(state.ocrEngine) && state.detectorMode !== 'whole-image' && state.detectorMode !== 'bubble-heuristic') {
             try {
               // Sort any already-detected boxes into reading order before sending coordinates to server
               for (const p of targetPages) {
@@ -3416,7 +3636,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
                 }
               }
 
-              const chunkSize = 16;
+              const chunkSize = 8;
               const chunks = [];
               for (let i = 0; i < targetPages.length; i += chunkSize) {
                 chunks.push(targetPages.slice(i, i + chunkSize));
@@ -3443,6 +3663,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
                   );
 
                   const respData = await nativeExtractPagesChunk(chunk);
+                  if (state.abortRequested) throw new Error('ABORTED');
                   const outPages = respData.pages || [];
 
                   chunk.forEach((p, idx) => {
@@ -3467,6 +3688,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
                       (p.blocks || []).forEach((blk, bIdx) => {
                         blk.text = texts[bIdx] !== undefined ? texts[bIdx] : (blk.text || '');
                         blk.charConf = confs[bIdx] !== undefined ? confs[bIdx] : blk.charConf;
+                        blk.verified = false;
                       });
                     }
                     p.status = 'done';
@@ -3493,7 +3715,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
               await Promise.all([serverPipeConsumer(), serverPipeConsumer()]);
               handledByServerPipeline = true;
             } catch (srvErr) {
-              if (srvErr && srvErr.message === 'ABORTED') throw srvErr;
+              if (isAbortError(srvErr)) throw new Error('ABORTED');
               state.nativeBackend.connected = false;
               updateAccelBadgeText();
               showToast('Native server pipeline unavailable (' + srvErr.message + '); falling back to Browser Workers.', 'warn');
@@ -3507,7 +3729,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
               await runParallelPagesDetectionInternal(undetected, 'Stage 1/2: Detecting boxes');
             }
 
-            if (state.ocrEngine === 'manga-ocr') {
+            if (isMangaOcrFamily(state.ocrEngine)) {
               await ensureMangaOcrPoolReady();
             } else {
               await ensureTesseractPoolReady();
@@ -3545,7 +3767,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
 
               if (windowJobs.length === 0) continue;
 
-              const activeWorkerCount = state.ocrEngine === 'manga-ocr'
+              const activeWorkerCount = isMangaOcrFamily(state.ocrEngine)
                 ? Math.max(1, runtime.workerSlots.filter((s) => s.loaded.mocr).length || getDesiredPoolSize('mocr'))
                 : Math.max(1, runtime.tesseractWorkers.length || 1);
               const concurrency = Math.min(windowJobs.length, activeWorkerCount);
@@ -3565,6 +3787,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
                   state.activeOcrBlockIds.delete(job.blk.id);
                   job.blk.text = res.text;
                   job.blk.charConf = res.charConf;
+                  job.blk.verified = false;
                   updatePageFullText(job.page);
 
                   const left = (remainingPerPage.get(job.page.id) || 1) - 1;
@@ -3592,8 +3815,13 @@ mokuro "/path/to/manga/volume_folder"</pre>
           }
 
           const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
-          setProgress(true, 'Extracted ' + totalExtractedBubbles + ' bubbles across ' + targetPages.length + ' page(s) in ' + elapsed + 's!', 100);
-          showToast('Extracted ' + totalExtractedBubbles + ' bubbles across ' + targetPages.length + ' page(s) in ' + elapsed + 's!');
+          const lowReviewTotal = targetPages.reduce((acc, p) => acc + countPageReviewBlocks(p), 0);
+          const reviewSuffix = lowReviewTotal > 0 ? (' · ' + lowReviewTotal + ' <90% highlighted for review') : '';
+          setProgress(true, 'Extracted ' + totalExtractedBubbles + ' bubbles in ' + elapsed + 's' + reviewSuffix + '!', 100);
+          showToast(
+            'Extracted ' + totalExtractedBubbles + ' bubbles in ' + elapsed + 's' + reviewSuffix + '!',
+            lowReviewTotal > 0 ? 'warn' : undefined
+          );
           setTimeout(() => {
             if (!state.isExtracting) setProgress(false);
           }, 2200);
@@ -4106,8 +4334,16 @@ mokuro "/path/to/manga/volume_folder"</pre>
 
       function applyPageStatusBadgeStyle(statusBadge, page) {
         if (page.status === 'done') {
-          statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800';
-          statusBadge.textContent = 'Extracted';
+          const revCount = countPageReviewBlocks(page);
+          if (revCount > 0) {
+            statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300';
+            statusBadge.textContent = '⚠ ' + revCount + ' <90%';
+            statusBadge.title = revCount + ' bubble(s) below 90% OCR confidence need review';
+          } else {
+            statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800';
+            statusBadge.textContent = 'Extracted';
+            statusBadge.title = '';
+          }
         } else if (page.status === 'detecting') {
           statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 animate-pulse';
           statusBadge.textContent = 'Detecting…';
@@ -4576,17 +4812,25 @@ mokuro "/path/to/manga/volume_folder"</pre>
         (page.blocks || []).forEach((blk, idx) => {
           const isSelected = blk.id === state.selectedBlockId;
           const isOcrActive = state.activeOcrBlockIds.has(blk.id);
+          const needsReview = isBlockBelowReviewThreshold(blk, page);
+          const confPct = typeof blk.charConf === 'number' ? Math.round(blk.charConf * 100) : null;
           const div = document.createElement('div');
           div.setAttribute('data-bbox-id', blk.id);
-          div.className = 'bbox-rect' + (isSelected ? ' active' : '') + (isOcrActive ? ' ocr-working' : '');
+          div.className =
+            'bbox-rect' +
+            (isSelected ? ' active' : '') +
+            (isOcrActive ? ' ocr-working' : '') +
+            (!isSelected && !isOcrActive && needsReview ? ' needs-review' : '');
           applyBoxGeometryToDom(div, blk, page);
           div.title = blk.text
-            ? '#' + (idx + 1) + ': ' + blk.text + ' (drag to move, handles to resize, Del to remove)'
-            : 'Bubble #' + (idx + 1) + ' (drag to move, handles to resize, Del to remove)';
+            ? '#' + (idx + 1) +
+              (confPct !== null ? ' (' + confPct + '% OCR' + (needsReview ? ' · REVIEW <90%' : '') + ')' : '') +
+              ': ' + blk.text
+            : 'Bubble #' + (idx + 1) + (needsReview ? ' (Empty OCR — review)' : ' (drag to move, handles to resize, Del to remove)');
 
           const badge = document.createElement('span');
           badge.className = 'bbox-badge';
-          badge.textContent = String(idx + 1);
+          badge.textContent = needsReview ? (idx + 1) + '!' : String(idx + 1);
           div.appendChild(badge);
 
           // 8 Resize Handles
@@ -4625,6 +4869,22 @@ mokuro "/path/to/manga/volume_folder"</pre>
             });
 
             qbar.appendChild(qOcrBtn);
+            if (needsReview) {
+              const qVerifyBtn = document.createElement('button');
+              qVerifyBtn.type = 'button';
+              qVerifyBtn.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition';
+              qVerifyBtn.textContent = '✓ OK';
+              qVerifyBtn.title = 'Mark this <90% OCR bubble as reviewed & verified';
+              qVerifyBtn.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+              qVerifyBtn.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                blk.verified = true;
+                updatePageCardInPlace(page);
+                renderOverlayBoxes();
+                renderRightPanel();
+              });
+              qbar.appendChild(qVerifyBtn);
+            }
             qbar.appendChild(qDelBtn);
             div.appendChild(qbar);
           }
@@ -4751,10 +5011,55 @@ mokuro "/path/to/manga/volume_folder"</pre>
         return chunks.join('\n\n');
       }
 
+      function jumpToNextLowConfidenceBubble() {
+        if (state.pages.length === 0) return;
+        const curPageIdx = Math.max(0, state.pages.findIndex((p) => p.id === state.selectedPageId));
+        for (let offset = 0; offset < state.pages.length; offset++) {
+          const pIdx = (curPageIdx + offset) % state.pages.length;
+          const p = state.pages[pIdx];
+          if (!p || !Array.isArray(p.blocks)) continue;
+          const curBlkIdx = offset === 0
+            ? p.blocks.findIndex((b) => b.id === state.selectedBlockId)
+            : -1;
+          for (let bStep = 1; bStep <= p.blocks.length; bStep++) {
+            const bIdx = offset === 0
+              ? (curBlkIdx + bStep) % p.blocks.length
+              : bStep - 1;
+            const cand = p.blocks[bIdx];
+            if (isBlockBelowReviewThreshold(cand, p)) {
+              if (p.id !== state.selectedPageId) {
+                goToPageIndex(pIdx, { animateSlide: true });
+              }
+              state.selectedBlockId = cand.id;
+              if (state.activeTab !== 'bubbles') {
+                setActiveTab('bubbles');
+              } else {
+                renderOverlayBoxes();
+                renderRightPanel();
+              }
+              setTimeout(() => {
+                const cardEl = el.panelPageBubbles.querySelector('[data-block-card="' + cand.id + '"]');
+                if (cardEl) cardEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }, 30);
+              return;
+            }
+          }
+        }
+        showToast('All extracted bubbles are ≥90% confidence or verified!');
+      }
+
       function renderRightPanel() {
         const page = getSelectedPage();
         const bubbleCount = page && page.blocks ? page.blocks.length : 0;
         el.currentBubbleCountBadge.textContent = String(bubbleCount);
+
+        const volReviewCount = countVolumeReviewBlocks();
+        const pageReviewCount = page ? countPageReviewBlocks(page) : 0;
+        if (el.lowConfTabBadge) {
+          const badgeNum = pageReviewCount > 0 ? pageReviewCount : volReviewCount;
+          el.lowConfTabBadge.classList.toggle('hidden', badgeNum === 0);
+          el.lowConfTabBadge.textContent = '⚠ ' + badgeNum;
+        }
 
         const combined = buildCombinedMangaTranscript();
         el.fullMangaTextarea.value = combined;
@@ -4827,32 +5132,114 @@ mokuro "/path/to/manga/volume_folder"</pre>
         studyTopStrip.appendChild(btnTranslatePageAll);
         el.panelPageBubbles.appendChild(studyTopStrip);
 
-        page.blocks.forEach((blk, idx) => {
+        // <90% OCR Confidence Review Strip (Filter + Jump to Next <90% Bubble)
+        if (extractedCountOnPage > 0 || volReviewCount > 0 || state.filterLowConfOnly) {
+          const reviewStrip = document.createElement('div');
+          const hasAnyLow = pageReviewCount > 0 || volReviewCount > 0;
+          reviewStrip.className =
+            'rounded-xl border px-2.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs ' +
+            (hasAnyLow
+              ? 'border-amber-300 bg-amber-50/85 text-amber-950'
+              : 'border-emerald-200 bg-emerald-50/60 text-emerald-900');
+
+          const revInfo = document.createElement('span');
+          revInfo.className = 'font-semibold text-[11px]';
+          if (hasAnyLow) {
+            revInfo.textContent =
+              '⚠ Review (<90% OCR): ' + pageReviewCount + ' on page · ' + volReviewCount + ' total';
+          } else {
+            revInfo.textContent = '✓ All bubbles ≥90% confidence or verified';
+          }
+
+          const revBtns = document.createElement('div');
+          revBtns.className = 'flex items-center gap-1.5';
+
+          const btnFilterLow = document.createElement('button');
+          btnFilterLow.type = 'button';
+          btnFilterLow.className =
+            'px-2 py-0.5 rounded-lg text-[11px] font-semibold border transition ' +
+            (state.filterLowConfOnly
+              ? 'border-amber-600 bg-amber-600 text-white'
+              : 'border-amber-300 bg-white text-amber-900 hover:bg-amber-100/70');
+          btnFilterLow.textContent = state.filterLowConfOnly ? 'Showing <90% Only' : 'Filter <90%';
+          btnFilterLow.title = 'Show only bubbles below 90% OCR confidence on this page';
+          btnFilterLow.addEventListener('click', () => {
+            state.filterLowConfOnly = !state.filterLowConfOnly;
+            renderRightPanel();
+          });
+          revBtns.appendChild(btnFilterLow);
+
+          if (hasAnyLow) {
+            const btnJumpNext = document.createElement('button');
+            btnJumpNext.type = 'button';
+            btnJumpNext.className =
+              'px-2 py-0.5 rounded-lg text-[11px] font-semibold bg-amber-600 text-white hover:bg-amber-700 transition shadow-sm';
+            btnJumpNext.textContent = 'Next <90% →';
+            btnJumpNext.title = 'Jump to the next bubble below 90% OCR confidence across your pages';
+            btnJumpNext.addEventListener('click', () => jumpToNextLowConfidenceBubble());
+            revBtns.appendChild(btnJumpNext);
+          }
+
+          reviewStrip.appendChild(revInfo);
+          reviewStrip.appendChild(revBtns);
+          el.panelPageBubbles.appendChild(reviewStrip);
+        }
+
+        const visibleBlocks = state.filterLowConfOnly
+          ? page.blocks.map((blk, idx) => ({ blk, idx })).filter((item) => isBlockBelowReviewThreshold(item.blk, page))
+          : page.blocks.map((blk, idx) => ({ blk, idx }));
+
+        if (visibleBlocks.length === 0 && state.filterLowConfOnly) {
+          const allGoodMsg = document.createElement('p');
+          allGoodMsg.className = 'text-xs text-emerald-700 bg-emerald-50/70 border border-emerald-200 rounded-xl py-5 px-3 text-center font-medium';
+          allGoodMsg.textContent = 'No bubbles below 90% OCR confidence on this page!';
+          el.panelPageBubbles.appendChild(allGoodMsg);
+        }
+
+        visibleBlocks.forEach(({ blk, idx }) => {
           const isSelected = blk.id === state.selectedBlockId;
+          const needsReview = isBlockBelowReviewThreshold(blk, page);
           const card = document.createElement('div');
           card.setAttribute('data-block-card', blk.id);
           card.className =
             'rounded-xl border p-2.5 transition ' +
-            (isSelected
-              ? 'border-rose-400 bg-rose-50/40 shadow-sm'
-              : 'border-slate-200 bg-slate-50/50 hover:border-slate-300');
+            (needsReview
+              ? (isSelected
+                  ? 'border-2 border-amber-500 bg-amber-50/80 ring-2 ring-rose-300 shadow-sm'
+                  : 'border-2 border-amber-400 bg-amber-50/65 hover:border-amber-500 shadow-sm')
+              : (isSelected
+                  ? 'border-rose-400 bg-rose-50/40 shadow-sm'
+                  : 'border-slate-200 bg-slate-50/50 hover:border-slate-300'));
 
           const header = document.createElement('div');
           header.className = 'flex items-center justify-between gap-2 mb-1.5';
 
           const leftBadge = document.createElement('div');
-          leftBadge.className = 'flex items-center gap-1.5 cursor-pointer';
+          leftBadge.className = 'flex items-center flex-wrap gap-1.5 cursor-pointer';
           const pill = document.createElement('span');
           pill.className =
             'inline-flex items-center justify-center min-w-[22px] h-5 px-1.5 rounded-full text-[11px] font-bold text-white ' +
-            (isSelected ? 'bg-rose-600' : 'bg-indigo-600');
+            (isSelected ? 'bg-rose-600' : (needsReview ? 'bg-amber-600' : 'bg-indigo-600'));
           pill.textContent = '#' + (idx + 1);
 
           const confSpan = document.createElement('span');
-          confSpan.className = 'text-[11px] text-slate-500';
-          if (typeof blk.charConf === 'number' && blk.charConf > 0) {
-            confSpan.textContent = Math.round(blk.charConf * 100) + '% OCR conf';
+          if (blk.verified) {
+            confSpan.className = 'px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200';
+            const rawPct = typeof blk.charConf === 'number' && blk.charConf > 0
+              ? ' (' + Math.round(blk.charConf * 100) + '%)'
+              : '';
+            confSpan.textContent = '✓ Verified' + rawPct;
+          } else if (needsReview) {
+            confSpan.className = 'px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-amber-200/90 text-amber-950 border border-amber-400';
+            const pctStr = typeof blk.charConf === 'number' && blk.charConf > 0
+              ? Math.round(blk.charConf * 100) + '% OCR'
+              : 'Empty OCR';
+            confSpan.textContent = '⚠ ' + pctStr + ' · Needs Review (<90%)';
+          } else if (typeof blk.charConf === 'number' && blk.charConf > 0) {
+            confSpan.className = 'px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200';
+            confSpan.textContent = Math.round(blk.charConf * 100) + '% OCR';
           } else {
+            confSpan.className = 'text-[11px] text-slate-500';
             confSpan.textContent = (blk.x2 - blk.x1) + '×' + (blk.y2 - blk.y1) + ' px';
           }
           leftBadge.appendChild(pill);
@@ -4881,6 +5268,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
               const res = await recognizeSingleBlock(im, blk);
               blk.text = res.text;
               blk.charConf = res.charConf;
+              blk.verified = false;
               page.status = 'done';
               updatePageFullText(page);
               setProgress(false);
@@ -4915,6 +5303,21 @@ mokuro "/path/to/manga/volume_folder"</pre>
             renderAll();
           });
 
+          if (needsReview) {
+            const btnVerify = document.createElement('button');
+            btnVerify.type = 'button';
+            btnVerify.className = 'px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition shadow-sm';
+            btnVerify.textContent = '✓ Verify';
+            btnVerify.title = 'Confirm Japanese text is accurate and clear the <90% review highlight';
+            btnVerify.addEventListener('click', () => {
+              blk.verified = true;
+              updatePageCardInPlace(page);
+              renderOverlayBoxes();
+              renderRightPanel();
+            });
+            actions.appendChild(btnVerify);
+          }
+
           actions.appendChild(btnReOcr);
           actions.appendChild(btnCopy);
           actions.appendChild(btnDel);
@@ -4927,7 +5330,11 @@ mokuro "/path/to/manga/volume_folder"</pre>
           ta.placeholder = 'Click Extract to transcribe this bubble…';
           ta.value = blk.text || '';
           ta.style.fontSize = state.jpFontSize + 'px';
-          ta.className = 'jp-text w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y';
+          ta.className =
+            'jp-text w-full rounded-lg border bg-white px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-2 resize-y ' +
+            (needsReview
+              ? 'border-amber-400 focus:ring-amber-500'
+              : 'border-slate-200 focus:ring-indigo-500');
           ta.addEventListener('focus', () => {
             if (state.selectedBlockId !== blk.id) {
               state.selectedBlockId = blk.id;
@@ -5556,6 +5963,10 @@ mokuro "/path/to/manga/volume_folder"</pre>
             setDrawMode(false);
             return;
           }
+          if (state.isExtracting) {
+            triggerImmediateStop();
+            return;
+          }
           if (!isTyping && state.selectedBlockId) {
             state.selectedBlockId = null;
             renderOverlayBoxes();
@@ -5762,8 +6173,7 @@ mokuro "/path/to/manga/volume_folder"</pre>
         if (p) extractPagesQueue([p]);
       });
       el.btnStopExtract.addEventListener('click', () => {
-        state.abortRequested = true;
-        terminateAiWorkerForStop();
+        triggerImmediateStop();
       });
 
       // Page Navigation, Manga Reader Empty-Side Click, Interactive Drag-Slide, Trackpad Swipe & Scrubber
@@ -6005,33 +6415,10 @@ mokuro "/path/to/manga/volume_folder"</pre>
       el.btnDrawBoxMode.addEventListener('click', () => setDrawMode(!state.drawMode));
       el.btnExitDrawMode.addEventListener('click', () => setDrawMode(false));
 
-      el.btnRedetectPage.addEventListener('click', async () => {
+      el.btnRedetectPage.addEventListener('click', () => {
         const page = getSelectedPage();
         if (!page || state.isExtracting) return;
-        try {
-          state.abortRequested = false;
-          setExtractingUI(true);
-          setProgress(true, 'Detecting speech bubbles on ' + page.name + ' (background worker)…', 35);
-          const t0 = performance.now();
-          const im = await loadImageElement(page.url);
-          page.blocks = await detectBlocksForPage(im);
-          const elapsedSec = ((performance.now() - t0) / 1000).toFixed(2);
-          page.boxesDetected = true;
-          page.status = 'detected';
-          updatePageFullText(page);
-          setProgress(false);
-          showToast('Detected ' + page.blocks.length + ' text region(s) in ' + elapsedSec + 's.');
-        } catch (err) {
-          setProgress(false);
-          if (err && err.message === 'ABORTED') {
-            showToast('Detection stopped.', 'warn');
-          } else {
-            showToast('Detection failed: ' + (err ? err.message : ''), 'error');
-          }
-        } finally {
-          setExtractingUI(false);
-          renderAll();
-        }
+        detectBoxesForAllPages([page]);
       });
 
       el.btnZoomIn.addEventListener('click', () => {
