@@ -1223,12 +1223,46 @@ def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) 
     resp.headers["Cross-Origin-Embedder-Policy"] = "credentialless"
     return resp
 
+  static_root = (BASE_DIR / "static").resolve()
+
+  def _serve_static_rel(rel_path: str) -> Response:
+    candidate = (static_root / rel_path).resolve()
+    try:
+      candidate.relative_to(static_root)
+    except ValueError:
+      return Response(status_code=404)
+    if not candidate.is_file():
+      return Response(status_code=404)
+    suffix = candidate.suffix.lower()
+    media = (
+        "text/css; charset=utf-8"
+        if suffix == ".css"
+        else "application/javascript; charset=utf-8"
+        if suffix == ".js"
+        else "text/html; charset=utf-8"
+        if suffix == ".html"
+        else None
+    )
+    return FileResponse(str(candidate), media_type=media)
+
   @app.get("/")
   async def index() -> Response:
-    html_path = BASE_DIR / "static" / "index.html"
-    if html_path.exists():
-      return FileResponse(str(html_path), media_type="text/html")
+    html_path = static_root / "index.html"
+    if html_path.is_file():
+      return FileResponse(str(html_path), media_type="text/html; charset=utf-8")
     return JSONResponse({"ok": True, "message": "AnkiSuru Local Server running."})
+
+  @app.get("/styles.css")
+  async def serve_styles_css() -> Response:
+    return _serve_static_rel("styles.css")
+
+  @app.get("/js/{asset_name}")
+  async def serve_js_asset(asset_name: str) -> Response:
+    return _serve_static_rel(f"js/{asset_name}")
+
+  @app.get("/static/{asset_path:path}")
+  async def serve_static_asset(asset_path: str) -> Response:
+    return _serve_static_rel(asset_path)
 
   @app.get("/api/health")
   async def health() -> dict[str, Any]:
