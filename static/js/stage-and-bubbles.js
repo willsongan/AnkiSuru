@@ -448,6 +448,8 @@ function renderActivePageStage() {
   el.btnNextPage.disabled = disableNext;
   el.btnSideNavPrev.disabled = disablePrev;
   el.btnSideNavNext.disabled = disableNext;
+  if (el.btnFsPrevPage) el.btnFsPrevPage.disabled = disablePrev;
+  if (el.btnFsNextPage) el.btnFsNextPage.disabled = disableNext;
   el.btnSideNavPrev.classList.toggle('hidden', !page || total <= 1);
   el.btnSideNavNext.classList.toggle('hidden', !page || total <= 1);
 
@@ -458,6 +460,7 @@ function renderActivePageStage() {
   if (!page) {
     el.activePageTitle.textContent = 'No page selected';
     el.scrubberPageCounter.textContent = '0 / 0';
+    if (el.fsPageCounter) el.fsPageCounter.textContent = '0 / 0';
     el.pageScrubberRange.min = '1';
     el.pageScrubberRange.max = '1';
     el.pageScrubberRange.value = '1';
@@ -471,6 +474,7 @@ function renderActivePageStage() {
   el.stageImageWrapper.classList.remove('hidden');
   el.activePageTitle.textContent = (idx + 1) + '/' + total + ' · ' + page.name;
   el.scrubberPageCounter.textContent = (idx + 1) + ' / ' + total;
+  if (el.fsPageCounter) el.fsPageCounter.textContent = (idx + 1) + ' / ' + total;
   el.pageScrubberRange.min = '1';
   el.pageScrubberRange.max = String(Math.max(1, total));
   el.pageScrubberRange.value = String(idx + 1);
@@ -482,13 +486,62 @@ function renderActivePageStage() {
 }
 
 function syncBoxesToggleUI() {
-  if (!el.btnToggleBoxes) return;
-  const on = Boolean(state.showBoxes);
-  el.btnToggleBoxes.classList.toggle('is-active', on);
-  if (el.iconBoxesOn) el.iconBoxesOn.classList.toggle('hidden', !on);
-  if (el.iconBoxesOff) el.iconBoxesOff.classList.toggle('hidden', on);
-  if (el.toggleBoxesSr) el.toggleBoxesSr.textContent = on ? 'Boxes: On' : 'Boxes: Off';
-  el.btnToggleBoxes.setAttribute('data-tip', on ? 'Hide Boxes' : 'Show Boxes');
+  const liveOn = Boolean(state.liveTextMode);
+  const boxesVis = Boolean(state.showBoxes) && !liveOn;
+  if (el.btnToggleBoxes) {
+    el.btnToggleBoxes.classList.toggle('is-active', boxesVis);
+    if (el.iconBoxesOn) el.iconBoxesOn.classList.toggle('hidden', !boxesVis);
+    if (el.iconBoxesOff) el.iconBoxesOff.classList.toggle('hidden', boxesVis);
+    if (el.toggleBoxesSr) el.toggleBoxesSr.textContent = boxesVis ? 'Boxes: On' : 'Boxes: Off';
+    el.btnToggleBoxes.setAttribute('data-tip', boxesVis ? 'Hide Boxes' : 'Show Boxes');
+  }
+  if (el.btnSelectTextMode) {
+    el.btnSelectTextMode.classList.toggle('is-active', liveOn);
+    el.btnSelectTextMode.setAttribute('aria-pressed', liveOn ? 'true' : 'false');
+  }
+  if (el.btnFsSelectText) {
+    el.btnFsSelectText.classList.toggle('is-active', liveOn);
+    el.btnFsSelectText.setAttribute('aria-pressed', liveOn ? 'true' : 'false');
+  }
+  if (el.liveTextBanner) {
+    el.liveTextBanner.classList.toggle('hidden', !liveOn);
+  }
+  if (el.viewerViewport) {
+    el.viewerViewport.classList.toggle('select-none', !liveOn);
+  }
+  if (el.bboxOverlayLayer) {
+    el.bboxOverlayLayer.classList.toggle('is-live-text', liveOn);
+  }
+  if (!liveOn && el.liveSelectionCard) {
+    el.liveSelectionCard.classList.add('hidden');
+  }
+}
+
+function fitLiveTextSpans() {
+  if (!state.liveTextMode || !el.bboxOverlayLayer) return;
+  const regions = el.bboxOverlayLayer.querySelectorAll('.live-text-region');
+  regions.forEach((reg) => {
+    const span = reg.querySelector('.live-text-span');
+    if (!span) return;
+    const txt = span.textContent || '';
+    const charCount = Math.max(1, Array.from(txt).length);
+    const rw = Math.max(16, reg.clientWidth || parseFloat(reg.dataset.pxW) || 40);
+    const rh = Math.max(16, reg.clientHeight || parseFloat(reg.dataset.pxH) || 40);
+    const isVert = span.classList.contains('is-vertical');
+    if (isVert) {
+      const cols = Math.max(1, Math.round(Math.sqrt((charCount * rw) / Math.max(1, rh * 1.08))));
+      const charsPerCol = Math.max(1, Math.ceil(charCount / cols));
+      const fontPx = Math.max(9, Math.min(rw / (cols * 1.08), rh / (charsPerCol * 1.02)));
+      span.style.fontSize = fontPx.toFixed(1) + 'px';
+      span.style.lineHeight = '1.08';
+    } else {
+      const rows = Math.max(1, Math.round(Math.sqrt((charCount * rh) / Math.max(1, rw * 1.08))));
+      const charsPerRow = Math.max(1, Math.ceil(charCount / rows));
+      const fontPx = Math.max(9, Math.min(rh / (rows * 1.14), rw / (charsPerRow * 1.02)));
+      span.style.fontSize = fontPx.toFixed(1) + 'px';
+      span.style.lineHeight = '1.14';
+    }
+  });
 }
 
 function syncZoomFitUI() {
@@ -505,11 +558,14 @@ function applyStageZoom(page) {
   if (!page) return;
   if (state.fitMode) {
     el.activePageImage.style.width = '';
-    el.activePageImage.style.maxHeight = 'calc(100vh - 205px)';
+    el.activePageImage.style.maxHeight = state.isViewerFullscreen ? 'calc(100vh - 20px)' : 'calc(100vh - 205px)';
   } else {
     const targetW = Math.round(page.width * state.zoom);
     el.activePageImage.style.maxHeight = 'none';
     el.activePageImage.style.width = targetW + 'px';
+  }
+  if (state.liveTextMode) {
+    requestAnimationFrame(fitLiveTextSpans);
   }
 }
 
@@ -526,9 +582,48 @@ function applyBoxGeometryToDom(div, blk, page) {
 
 function renderOverlayBoxes() {
   el.bboxOverlayLayer.innerHTML = '';
+  syncBoxesToggleUI();
   syncToolbarBoxDeleteBtn();
   const page = getSelectedPage();
-  if (!page || !state.showBoxes || !page.width || !page.height) return;
+  if (!page || !page.width || !page.height) return;
+
+  // Select Text Popup Mode: hide boundary boxes and turn speech bubbles into clean click targets
+  // that open a crisp, normal-selectable sentence popup right next to the bubble!
+  if (state.liveTextMode) {
+    if (state.isSampleSet && typeof populateSampleGroundTruthForPage === 'function') {
+      const hasTxt = (page.blocks || []).some((b) => Boolean((b.text || '').trim()));
+      if (!hasTxt && populateSampleGroundTruthForPage(page)) {
+        updatePageCardInPlace(page);
+      }
+    }
+    (page.blocks || []).forEach((blk, idx) => {
+      const txt = (blk.text || '').trim();
+      if (!txt) return;
+      const reg = document.createElement('div');
+      const isPopupOpen = state.livePopupBlockId === blk.id;
+      reg.className = 'live-text-region' + (isPopupOpen ? ' has-selection' : '');
+      reg.setAttribute('data-live-text', '1');
+      reg.setAttribute('data-bbox-id', blk.id);
+      reg.title = 'Click to open selectable sentence popup (Bubble #' + (idx + 1) + ')';
+      applyBoxGeometryToDom(reg, blk, page);
+
+      reg.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (!state.liveTextMode) return;
+        if (typeof openLiveBubblePopup === 'function') {
+          openLiveBubblePopup(blk.id);
+        }
+      });
+
+      el.bboxOverlayLayer.appendChild(reg);
+    });
+    if (typeof positionOpenLivePopup === 'function') {
+      requestAnimationFrame(positionOpenLivePopup);
+    }
+    return;
+  }
+
+  if (!state.showBoxes) return;
 
   (page.blocks || []).forEach((blk, idx) => {
     const isSelected = blk.id === state.selectedBlockId;
@@ -816,7 +911,7 @@ function renderRightPanel() {
   // Top Page-Level Gemini Translation & API Key Convenience Strip
   const extractedCountOnPage = page.blocks.filter((b) => (b.text || '').trim().length > 0).length;
   const studyTopStrip = document.createElement('div');
-  studyTopStrip.className = 'rounded-xl border border-indigo-100 bg-indigo-50/50 px-2.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs';
+  studyTopStrip.className = 'rounded-md border border-indigo-100 bg-indigo-50/50 px-2.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs';
 
   const keyBadgeBtn = document.createElement('button');
   keyBadgeBtn.type = 'button';
@@ -858,7 +953,7 @@ function renderRightPanel() {
     const reviewStrip = document.createElement('div');
     const hasAnyLow = pageReviewCount > 0 || volReviewCount > 0;
     reviewStrip.className =
-      'rounded-xl border px-2.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs ' +
+      'rounded-md border px-2.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs ' +
       (hasAnyLow
         ? 'border-amber-300 bg-amber-50/85 text-amber-950'
         : 'border-emerald-200 bg-emerald-50/60 text-emerald-900');
@@ -912,7 +1007,7 @@ function renderRightPanel() {
 
   if (visibleBlocks.length === 0 && state.filterLowConfOnly) {
     const allGoodMsg = document.createElement('p');
-    allGoodMsg.className = 'text-xs text-emerald-700 bg-emerald-50/70 border border-emerald-200 rounded-xl py-5 px-3 text-center font-medium';
+    allGoodMsg.className = 'text-xs text-emerald-700 bg-emerald-50/70 border border-emerald-200 rounded-md py-5 px-3 text-center font-medium';
     allGoodMsg.textContent = 'No bubbles below 90% OCR confidence on this page!';
     el.panelPageBubbles.appendChild(allGoodMsg);
   }
@@ -923,7 +1018,7 @@ function renderRightPanel() {
     const card = document.createElement('div');
     card.setAttribute('data-block-card', blk.id);
     card.className =
-      'rounded-xl border p-2.5 transition ' +
+      'rounded-md border p-2.5 transition ' +
       (needsReview
         ? (isSelected
             ? 'border-2 border-amber-500 bg-amber-50/80 ring-2 ring-rose-300 shadow-sm'
@@ -1366,13 +1461,13 @@ function renderRightPanel() {
 function setActiveTab(tab) {
   state.activeTab = tab;
   if (tab === 'all') {
-    el.tabBtnAllText.className = 'px-2.5 py-1.5 rounded-md bg-white text-slate-900 shadow-sm transition';
-    el.tabBtnPageBubbles.className = 'px-2.5 py-1.5 rounded-md text-slate-600 hover:text-slate-900 transition';
+    el.tabBtnAllText.className = 'md-tab is-active';
+    el.tabBtnPageBubbles.className = 'md-tab inline-flex items-center gap-1.5';
     el.panelAllText.classList.remove('hidden');
     el.panelPageBubbles.classList.add('hidden');
   } else {
-    el.tabBtnPageBubbles.className = 'px-2.5 py-1.5 rounded-md bg-white text-slate-900 shadow-sm transition';
-    el.tabBtnAllText.className = 'px-2.5 py-1.5 rounded-md text-slate-600 hover:text-slate-900 transition';
+    el.tabBtnPageBubbles.className = 'md-tab is-active inline-flex items-center gap-1.5';
+    el.tabBtnAllText.className = 'md-tab';
     el.panelPageBubbles.classList.remove('hidden');
     el.panelAllText.classList.add('hidden');
   }

@@ -5,21 +5,67 @@
 // -----------------------------------------------------------------------
 let dragStart = null;
 
+async function setLiveTextMode(enabled) {
+  const next = Boolean(enabled);
+  if (next && state.drawMode) {
+    state.drawMode = false;
+    el.drawModeBanner.classList.add('hidden');
+    el.stageImageWrapper.style.cursor = 'default';
+    el.btnDrawBoxMode.classList.remove('is-danger-active');
+    el.btnDrawBoxMode.setAttribute('data-tip', 'Draw Box');
+    el.rubberBandBox.classList.add('hidden');
+    dragStart = null;
+  }
+  state.liveTextMode = next;
+  if (!next) state.livePopupBlockId = null;
+  if (next) {
+    state.selectedBlockId = null;
+    const page = getSelectedPage();
+    if (page) {
+      const hasAnyText = (page.blocks || []).some((b) => Boolean((b.text || '').trim()));
+      if (!hasAnyText) {
+        if (state.isSampleSet && typeof populateSampleGroundTruthForPage === 'function') {
+          populateSampleGroundTruthForPage(page);
+          updatePageCardInPlace(page);
+          renderRightPanel();
+        } else if (!state.isExtracting) {
+          syncBoxesToggleUI();
+          renderOverlayBoxes();
+          showToast('Extracting Japanese text on this page so you can select & copy it…');
+          await extractPagesQueue([page]);
+          return;
+        }
+      }
+    }
+  } else {
+    try {
+      const sel = window.getSelection ? window.getSelection() : null;
+      if (sel) sel.removeAllRanges();
+    } catch (_e) {}
+  }
+  syncBoxesToggleUI();
+  renderOverlayBoxes();
+  renderRightPanel();
+}
+
 function setDrawMode(enabled) {
+  if (enabled && state.liveTextMode) {
+    state.liveTextMode = false;
+  }
   state.drawMode = enabled;
   el.drawModeBanner.classList.toggle('hidden', !enabled);
   el.stageImageWrapper.style.cursor = enabled ? 'crosshair' : 'default';
   el.btnDrawBoxMode.classList.toggle('is-danger-active', Boolean(enabled));
   el.btnDrawBoxMode.setAttribute('data-tip', enabled ? 'Exit Draw Mode' : 'Draw Box');
   if (enabled) {
-    if (!state.showBoxes) {
-      state.showBoxes = true;
-      syncBoxesToggleUI();
-      renderOverlayBoxes();
-    }
+    state.showBoxes = true;
+    syncBoxesToggleUI();
+    renderOverlayBoxes();
   } else {
     el.rubberBandBox.classList.add('hidden');
     dragStart = null;
+    syncBoxesToggleUI();
+    renderOverlayBoxes();
   }
 }
 
@@ -31,6 +77,16 @@ function stagePointerCoords(clientX, clientY) {
 }
 
 el.stageImageWrapper.addEventListener('pointerdown', (ev) => {
+  if (state.liveTextMode) {
+    if (
+      state.livePopupBlockId &&
+      !ev.target.closest('[data-live-text]') &&
+      !ev.target.closest('#liveSelectionCard')
+    ) {
+      closeLiveBubblePopup();
+    }
+    return;
+  }
   if (!state.drawMode) {
     if (state.selectedBlockId && !ev.target.closest('[data-bbox-id]')) {
       state.selectedBlockId = null;
@@ -146,7 +202,44 @@ function triggerBlobDownload(filename, mime, content) {
 // -----------------------------------------------------------------------
 let suppressOutsideSettingsCloseUntil = 0;
 
+function updateSettingsHelperTexts() {
+  if (el.helperDetector) {
+    el.helperDetector.textContent = state.detectorMode === 'rtdetr-int8'
+      ? 'RT-DETRv2 · 11 MB · Default'
+      : state.detectorMode === 'ctd-onnx'
+      ? 'Mokuro YOLOv5 · 95 MB · WebGPU'
+      : state.detectorMode === 'bubble-heuristic'
+      ? 'Instant pixel cluster · 0 MB'
+      : 'Single pre-cropped bubble';
+  }
+  if (el.helperOcrEngine) {
+    el.helperOcrEngine.textContent = state.ocrEngine === 'manga-ocr-cpt'
+      ? 'JP-only SOTA · 0.86% CER'
+      : state.ocrEngine === 'manga-ocr'
+      ? 'Classic base · 4.81% CER'
+      : 'Lightweight fallback · ~15 MB';
+  }
+  if (el.helperReadingOrder) {
+    el.helperReadingOrder.textContent = state.readingOrder === 'rtl'
+      ? 'Japanese manga panels'
+      : state.readingOrder === 'ttb'
+      ? 'Vertical webtoon strips'
+      : 'Western comic panels';
+  }
+  if (el.helperWorkerPool) {
+    el.helperWorkerPool.textContent = state.workerPoolSetting === 'auto'
+      ? 'Auto-scaled (' + DEFAULT_DET_WORKERS + ' threads)'
+      : state.workerPoolSetting === '1'
+      ? 'Single worker · Low RAM'
+      : state.workerPoolSetting + ' concurrent OS threads';
+  }
+  if (el.chkAutoPruneNonJp && el.chkAutoPruneNonJp.parentElement) {
+    el.chkAutoPruneNonJp.parentElement.classList.toggle('is-checked', Boolean(state.autoPruneNonJp));
+  }
+}
+
 function updateSettingsSummaryChip() {
+  updateSettingsHelperTexts();
   const geminiSuffix = (state.gemini && state.gemini.apiKey) ? ' · Gemini' : '';
   if (state.nativeBackend.connected) {
     const acc = (state.nativeBackend.info && state.nativeBackend.info.accelerator) || 'Native Server';
@@ -168,9 +261,7 @@ function updateSettingsSummaryChip() {
 
 function setSettingsOpen(open) {
   el.settingsPopover.classList.toggle('hidden', !open);
-  el.btnToggleSettings.classList.toggle('bg-indigo-50', open);
-  el.btnToggleSettings.classList.toggle('border-indigo-300', open);
-  el.btnToggleSettings.classList.toggle('text-indigo-700', open);
+  el.btnToggleSettings.classList.toggle('is-open', Boolean(open));
 }
 
 el.btnToggleSettings.addEventListener('click', (ev) => {
@@ -306,6 +397,27 @@ window.addEventListener('keydown', (ev) => {
       setDrawMode(false);
       return;
     }
+    if (state.liveTextMode) {
+      const subSel = typeof getPopupHighlightedSubstring === 'function' ? getPopupHighlightedSubstring() : '';
+      if (subSel && window.getSelection) {
+        window.getSelection().removeAllRanges();
+        syncLiveSelectionUI();
+        return;
+      }
+      if (state.livePopupBlockId) {
+        closeLiveBubblePopup();
+        return;
+      }
+      if (!state.isViewerFullscreen) {
+        state.showBoxes = true;
+        setLiveTextMode(false);
+        return;
+      }
+    }
+    if (state.isViewerFullscreen) {
+      setViewerFullscreen(false);
+      return;
+    }
     if (state.isExtracting) {
       triggerImmediateStop();
       return;
@@ -319,6 +431,20 @@ window.addEventListener('keydown', (ev) => {
   }
 
   if (isTyping || !el.stackModal.classList.contains('hidden')) return;
+
+  // Reader Keyboard Shortcuts: 'F' toggles Fullscreen Reader; 'S' toggles Select Text mode
+  if (!ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    if (ev.key === 'f' || ev.key === 'F') {
+      ev.preventDefault();
+      setViewerFullscreen(!state.isViewerFullscreen);
+      return;
+    }
+    if (ev.key === 's' || ev.key === 'S') {
+      ev.preventDefault();
+      setLiveTextMode(!state.liveTextMode);
+      return;
+    }
+  }
 
   // Manga Reader Keyboard Navigation (PageDown/PageUp/[/] anytime; Left/Right when no box is selected)
   if (state.pages.length > 1 && !state.drawMode) {
@@ -440,6 +566,7 @@ el.selectWorkerPoolSize.addEventListener('change', async () => {
 });
 el.chkAutoPruneNonJp.addEventListener('change', () => {
   state.autoPruneNonJp = el.chkAutoPruneNonJp.checked;
+  updateSettingsHelperTexts();
 });
 el.btnConnectBackend.addEventListener('click', () => {
   probeNativeBackend(el.inputBackendUrl.value, false);
@@ -605,7 +732,7 @@ el.viewerViewport.addEventListener('click', (ev) => {
 el.viewerViewport.addEventListener('pointerdown', (ev) => {
   if (ev.button !== 0 || state.drawMode || boxManip) return;
   if (!getSelectedPage() || state.pages.length <= 1) return;
-  if (ev.target.closest('[data-bbox-id], button, input, a, #emptyViewerState')) return;
+  if (ev.target.closest('[data-bbox-id], [data-live-text], #liveSelectionCard, button, input, a, #emptyViewerState')) return;
 
   const vpRect = el.viewerViewport.getBoundingClientRect();
   if (
@@ -753,9 +880,359 @@ el.viewerViewport.addEventListener('wheel', (ev) => {
 }, { passive: false });
 
 el.btnToggleBoxes.addEventListener('click', () => {
-  state.showBoxes = !state.showBoxes;
+  if (state.liveTextMode) {
+    state.liveTextMode = false;
+    state.showBoxes = true;
+  } else {
+    state.showBoxes = !state.showBoxes;
+  }
   syncBoxesToggleUI();
   renderOverlayBoxes();
+});
+
+if (el.btnSelectTextMode) {
+  el.btnSelectTextMode.addEventListener('click', () => {
+    setLiveTextMode(!state.liveTextMode);
+  });
+}
+if (el.btnExitLiveTextMode) {
+  el.btnExitLiveTextMode.addEventListener('click', () => {
+    state.showBoxes = true;
+    setLiveTextMode(false);
+  });
+}
+
+function getActivePopupBlockInfo() {
+  if (!state.liveTextMode || !state.livePopupBlockId) return null;
+  const page = getSelectedPage();
+  if (!page || !Array.isArray(page.blocks)) return null;
+  const idx = page.blocks.findIndex((b) => b.id === state.livePopupBlockId);
+  if (idx < 0) return null;
+  const blk = page.blocks[idx];
+  const text = (blk.text || '').trim();
+  if (!text) return null;
+  return { page, blk, index: idx + 1, text };
+}
+
+function getPopupHighlightedSubstring() {
+  if (!state.liveTextMode || !window.getSelection || !el.liveSelPreviewBody) return '';
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return '';
+  const anchor = sel.anchorNode;
+  const focus = sel.focusNode;
+  const insidePopup =
+    (anchor && el.liveSelPreviewBody.contains(anchor)) ||
+    (focus && el.liveSelPreviewBody.contains(focus));
+  if (!insidePopup) return '';
+  return sel.toString().trim();
+}
+
+function getSelectedLiveStageText() {
+  const sub = getPopupHighlightedSubstring();
+  if (sub) return sub;
+  const info = getActivePopupBlockInfo();
+  return info ? info.text : '';
+}
+
+function resetLiveBannerDefaultText() {
+  if (!el.liveBannerStatusText) return;
+  el.liveBannerStatusText.innerHTML =
+    '<strong>Select Text Mode:</strong> Click any speech bubble on the manga to open its sentence popup, then highlight &amp; copy text inside the popup.';
+}
+
+function positionOpenLivePopup() {
+  if (!el.liveSelectionCard) return;
+  const info = getActivePopupBlockInfo();
+  if (!info || !el.bboxOverlayLayer) {
+    el.liveSelectionCard.classList.add('hidden');
+    return;
+  }
+  const reg = el.bboxOverlayLayer.querySelector('[data-bbox-id="' + info.blk.id + '"]');
+  if (!reg) {
+    el.liveSelectionCard.classList.add('hidden');
+    return;
+  }
+  try {
+    const sRect = el.stageImageWrapper.getBoundingClientRect();
+    const anchorRect = reg.getBoundingClientRect();
+    el.liveSelectionCard.classList.remove('hidden', 'place-above', 'place-below');
+    const cardW = Math.min(360, Math.max(236, el.liveSelectionCard.offsetWidth || 260));
+    const centerLeft = (anchorRect.left + anchorRect.right) * 0.5 - sRect.left - cardW * 0.5;
+    const clampedLeft = Math.max(8, Math.min(Math.max(8, sRect.width - cardW - 8), centerLeft));
+    const relTop = anchorRect.top - sRect.top;
+    const relBottom = anchorRect.bottom - sRect.top;
+
+    el.liveSelectionCard.style.left = Math.round(clampedLeft) + 'px';
+    if (relTop >= 104) {
+      el.liveSelectionCard.classList.add('place-above');
+      el.liveSelectionCard.style.top = Math.round(relTop - 8) + 'px';
+    } else {
+      el.liveSelectionCard.classList.add('place-below');
+      el.liveSelectionCard.style.top = Math.round(Math.min(sRect.height - 12, relBottom + 8)) + 'px';
+    }
+  } catch (_e) {
+    el.liveSelectionCard.classList.add('hidden');
+  }
+}
+
+function openLiveBubblePopup(blockId) {
+  state.livePopupBlockId = blockId;
+  if (window.getSelection) {
+    try { window.getSelection().removeAllRanges(); } catch (_e) {}
+  }
+  if (el.bboxOverlayLayer) {
+    el.bboxOverlayLayer.querySelectorAll('.live-text-region').forEach((node) => {
+      node.classList.toggle('has-selection', node.getAttribute('data-bbox-id') === blockId);
+    });
+  }
+  const info = getActivePopupBlockInfo();
+  if (!info) {
+    closeLiveBubblePopup();
+    return;
+  }
+  if (el.liveSelPreviewBody) {
+    el.liveSelPreviewBody.textContent = info.text;
+  }
+  positionOpenLivePopup();
+  syncLiveSelectionUI();
+}
+
+function closeLiveBubblePopup() {
+  state.livePopupBlockId = null;
+  if (window.getSelection) {
+    try { window.getSelection().removeAllRanges(); } catch (_e) {}
+  }
+  if (el.bboxOverlayLayer) {
+    el.bboxOverlayLayer.querySelectorAll('.live-text-region.has-selection').forEach((n) => {
+      n.classList.remove('has-selection');
+    });
+  }
+  if (el.liveSelectionCard) {
+    el.liveSelectionCard.classList.add('hidden');
+  }
+  syncLiveSelectionUI();
+}
+
+function syncLiveSelectionUI() {
+  if (!state.liveTextMode) {
+    if (el.liveSelectionCard) el.liveSelectionCard.classList.add('hidden');
+    if (el.btnCopySelectedLiveText) el.btnCopySelectedLiveText.disabled = true;
+    resetLiveBannerDefaultText();
+    return;
+  }
+
+  const info = getActivePopupBlockInfo();
+  if (!info) {
+    if (el.liveSelectionCard) el.liveSelectionCard.classList.add('hidden');
+    if (el.btnCopySelectedLiveText) el.btnCopySelectedLiveText.disabled = true;
+    resetLiveBannerDefaultText();
+    return;
+  }
+
+  const sub = getPopupHighlightedSubstring();
+  const totalChars = Array.from(info.text).length;
+  const subChars = sub ? Array.from(sub).length : 0;
+
+  if (el.btnCopySelectedLiveText) {
+    el.btnCopySelectedLiveText.disabled = false;
+  }
+  if (el.liveSelMetaLabel) {
+    el.liveSelMetaLabel.textContent = sub
+      ? ('Selected · ' + subChars + ' / ' + totalChars + ' chars')
+      : ('Bubble #' + info.index + ' · ' + totalChars + ' chars');
+  }
+  if (el.liveSelectionCopyChip) {
+    const spanEl = el.liveSelectionCopyChip.querySelector('span');
+    if (spanEl) spanEl.textContent = sub ? 'Copy' : 'Copy';
+    el.liveSelectionCopyChip.title = sub
+      ? 'Copy highlighted characters'
+      : 'Copy entire sentence';
+  }
+  // Sync Offline Romaji toggle button & live Romaji readout (without clobbering active drag inside #liveSelRomajiBody)
+  if (el.btnTogglePopupRomaji) {
+    el.btnTogglePopupRomaji.classList.toggle('is-active', Boolean(state.showPopupRomaji));
+    el.btnTogglePopupRomaji.setAttribute('aria-pressed', state.showPopupRomaji ? 'true' : 'false');
+  }
+  if (el.liveSelRomajiWrap) {
+    el.liveSelRomajiWrap.classList.toggle('hidden', !state.showPopupRomaji);
+  }
+  if (state.showPopupRomaji && el.liveSelRomajiBody && typeof convertJapaneseToRomajiInstant === 'function') {
+    let selectingInsideRomaji = false;
+    if (window.getSelection) {
+      const s = window.getSelection();
+      if (s && s.rangeCount > 0 && !s.isCollapsed) {
+        selectingInsideRomaji =
+          (s.anchorNode && el.liveSelRomajiBody.contains(s.anchorNode)) ||
+          (s.focusNode && el.liveSelRomajiBody.contains(s.focusNode));
+      }
+    }
+    if (!selectingInsideRomaji) {
+      const targetJp = sub || info.text;
+      const romRes = convertJapaneseToRomajiInstant(targetJp, () => {
+        if (state.liveTextMode && state.livePopupBlockId === info.blk.id) {
+          syncLiveSelectionUI();
+          positionOpenLivePopup();
+        }
+      });
+      if (el.liveSelRomajiBody.textContent !== romRes.romaji) {
+        el.liveSelRomajiBody.textContent = romRes.romaji;
+      }
+      if (el.liveSelRomajiLabel) {
+        el.liveSelRomajiLabel.textContent = sub
+          ? 'Selected Romaji · Offline'
+          : (romRes.ready ? 'Offline Romaji (IPADIC)' : 'Offline Romaji (Loading dict…)');
+      }
+    }
+  }
+
+  if (el.liveBannerStatusText) {
+    const activeStr = sub || info.text;
+    const clipped = activeStr.length > 44 ? activeStr.slice(0, 44) + '…' : activeStr;
+    el.liveBannerStatusText.innerHTML = '';
+    const strong = document.createElement('strong');
+    strong.textContent = sub
+      ? ('Selected (' + subChars + ' chars): ')
+      : ('Bubble #' + info.index + ' (' + totalChars + ' chars — drag inside popup to select words): ');
+    const preview = document.createElement('span');
+    preview.className = 'font-medium';
+    preview.textContent = '「' + clipped + '」';
+    el.liveBannerStatusText.appendChild(strong);
+    el.liveBannerStatusText.appendChild(preview);
+  }
+}
+
+document.addEventListener('selectionchange', syncLiveSelectionUI);
+
+if (el.liveSelectionCard) {
+  // Stop stage/viewport slide handlers from intercepting mouse drags inside the popup,
+  // while allowing default browser text selection inside #liveSelPreviewBody!
+  el.liveSelectionCard.addEventListener('pointerdown', (ev) => {
+    ev.stopPropagation();
+  });
+  el.liveSelectionCard.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+  });
+}
+
+if (el.btnCopySelectedLiveText) {
+  el.btnCopySelectedLiveText.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+  });
+  el.btnCopySelectedLiveText.addEventListener('click', () => {
+    const txt = getSelectedLiveStageText();
+    if (txt) copyTextSafe(txt, 'Copied: ' + (txt.length > 24 ? txt.slice(0, 24) + '…' : txt));
+  });
+}
+if (el.btnSelectWholeBubble) {
+  el.btnSelectWholeBubble.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnSelectWholeBubble.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (el.liveSelPreviewBody && window.getSelection) {
+      const range = document.createRange();
+      range.selectNodeContents(el.liveSelPreviewBody);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      syncLiveSelectionUI();
+    }
+  });
+}
+if (el.liveSelectionCopyChip) {
+  el.liveSelectionCopyChip.addEventListener('pointerdown', (ev) => {
+    // Keep any highlighted substring inside #liveSelPreviewBody intact when clicking Copy!
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.liveSelectionCopyChip.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const txt = getSelectedLiveStageText();
+    if (txt) {
+      copyTextSafe(txt, 'Copied: ' + (txt.length > 24 ? txt.slice(0, 24) + '…' : txt));
+    }
+  });
+}
+if (el.btnTogglePopupRomaji) {
+  try {
+    const savedRom = localStorage.getItem('ankisuru_popup_romaji_v1');
+    if (savedRom === '0') state.showPopupRomaji = false;
+  } catch (_e) {}
+  el.btnTogglePopupRomaji.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnTogglePopupRomaji.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    state.showPopupRomaji = !state.showPopupRomaji;
+    try {
+      localStorage.setItem('ankisuru_popup_romaji_v1', state.showPopupRomaji ? '1' : '0');
+    } catch (_e) {}
+    syncLiveSelectionUI();
+    positionOpenLivePopup();
+  });
+}
+if (el.btnCopyPopupRomaji) {
+  el.btnCopyPopupRomaji.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnCopyPopupRomaji.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    let romTxt = '';
+    if (window.getSelection && el.liveSelRomajiBody) {
+      const sel = window.getSelection();
+      if (
+        sel &&
+        sel.rangeCount > 0 &&
+        !sel.isCollapsed &&
+        ((sel.anchorNode && el.liveSelRomajiBody.contains(sel.anchorNode)) ||
+          (sel.focusNode && el.liveSelRomajiBody.contains(sel.focusNode)))
+      ) {
+        romTxt = sel.toString().trim();
+      }
+    }
+    if (!romTxt && el.liveSelRomajiBody) {
+      romTxt = (el.liveSelRomajiBody.textContent || '').trim();
+    }
+    if (romTxt) {
+      copyTextSafe(romTxt, 'Copied Romaji: ' + (romTxt.length > 28 ? romTxt.slice(0, 28) + '…' : romTxt));
+    }
+  });
+}
+if (el.btnClearLiveSelection) {
+  el.btnClearLiveSelection.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnClearLiveSelection.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeLiveBubblePopup();
+  });
+}
+
+document.addEventListener('copy', () => {
+  const txt = getSelectedLiveStageText();
+  if (txt) {
+    showToast('Copied selected Japanese text!');
+  }
+});
+
+el.activePageImage.addEventListener('load', () => {
+  if (state.liveTextMode) {
+    renderOverlayBoxes();
+  }
+});
+window.addEventListener('resize', () => {
+  if (state.liveTextMode && typeof positionOpenLivePopup === 'function') {
+    requestAnimationFrame(positionOpenLivePopup);
+  }
 });
 
 el.btnDrawBoxMode.addEventListener('click', () => setDrawMode(!state.drawMode));
@@ -781,6 +1258,115 @@ el.btnZoomFit.addEventListener('click', () => {
   state.fitMode = true;
   state.zoom = 1.0;
   applyStageZoom(getSelectedPage());
+});
+
+// Distraction-Free Fullscreen Manga Reader Controller
+let fsHudIdleTimer = null;
+
+function wakeFullscreenHud() {
+  if (!state.isViewerFullscreen || !el.fsFloatingHud) return;
+  el.fsFloatingHud.classList.remove('is-idle');
+  if (fsHudIdleTimer) clearTimeout(fsHudIdleTimer);
+  fsHudIdleTimer = setTimeout(() => {
+    if (state.isViewerFullscreen && el.fsFloatingHud) {
+      el.fsFloatingHud.classList.add('is-idle');
+    }
+  }, 2200);
+}
+
+function setViewerFullscreen(enabled) {
+  const next = Boolean(enabled);
+  if (next === state.isViewerFullscreen) return;
+  state.isViewerFullscreen = next;
+
+  if (next) {
+    if (state.drawMode) setDrawMode(false);
+    setSettingsOpen(false);
+    state.preFsShowBoxes = state.showBoxes;
+    // Hide noisy boundary boxes in fullscreen so manga art is 100% clutter-free
+    state.showBoxes = false;
+    state.selectedBlockId = null;
+    document.body.classList.add('is-reader-fullscreen');
+    if (el.fsFloatingHud) {
+      el.fsFloatingHud.classList.remove('hidden');
+      wakeFullscreenHud();
+    }
+    try {
+      if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      }
+    } catch (_e) {}
+  } else {
+    if (fsHudIdleTimer) {
+      clearTimeout(fsHudIdleTimer);
+      fsHudIdleTimer = null;
+    }
+    document.body.classList.remove('is-reader-fullscreen');
+    if (el.fsFloatingHud) {
+      el.fsFloatingHud.classList.add('hidden');
+      el.fsFloatingHud.classList.remove('is-idle');
+    }
+    if (!state.liveTextMode) {
+      state.showBoxes = Boolean(state.preFsShowBoxes);
+    }
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    } catch (_e) {}
+  }
+
+  applyStageZoom(getSelectedPage());
+  syncBoxesToggleUI();
+  renderOverlayBoxes();
+  if (typeof positionOpenLivePopup === 'function') {
+    requestAnimationFrame(positionOpenLivePopup);
+  }
+  if (el.viewerViewport) {
+    el.viewerViewport.focus({ preventScroll: true });
+  }
+}
+
+if (el.btnToggleFullscreen) {
+  el.btnToggleFullscreen.addEventListener('click', () => {
+    setViewerFullscreen(!state.isViewerFullscreen);
+  });
+}
+if (el.btnExitFullscreen) {
+  el.btnExitFullscreen.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    setViewerFullscreen(false);
+  });
+}
+if (el.btnFsPrevPage) {
+  el.btnFsPrevPage.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    wakeFullscreenHud();
+    goToPageByOffset(-1, { animateSlide: true });
+  });
+}
+if (el.btnFsNextPage) {
+  el.btnFsNextPage.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    wakeFullscreenHud();
+    goToPageByOffset(1, { animateSlide: true });
+  });
+}
+if (el.btnFsSelectText) {
+  el.btnFsSelectText.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    wakeFullscreenHud();
+    setLiveTextMode(!state.liveTextMode);
+  });
+}
+if (el.viewerSection) {
+  el.viewerSection.addEventListener('pointermove', wakeFullscreenHud, { passive: true });
+  el.viewerSection.addEventListener('pointerdown', wakeFullscreenHud, { passive: true });
+}
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && state.isViewerFullscreen) {
+    setViewerFullscreen(false);
+  }
 });
 
 // Right Panel Tabs & Export Actions
@@ -910,13 +1496,8 @@ if (window.matchMedia) {
 }
 syncThemeToggleUI();
 
-// Auto-collapse intro title bar after 3.5 seconds to maximize manga workspace
+// Initialize Material settings summary & helper captions
 updateSettingsSummaryChip();
-setTimeout(() => {
-  if (el.titleBanner) {
-    el.titleBanner.classList.add('is-collapsed');
-  }
-}, 3500);
 
 // Initialize saved Gemini key/config, parallel worker pool, local server probe, & sample pages
 el.inputBackendUrl.value = state.nativeBackend.url;
@@ -924,3 +1505,6 @@ loadSavedGeminiConfig();
 ensureAiWorker();
 probeNativeBackend(state.nativeBackend.url, true);
 loadBuiltInSamples();
+if (typeof ensureOfflineRomajiEngine === 'function') {
+  setTimeout(() => { ensureOfflineRomajiEngine(); }, 250);
+}

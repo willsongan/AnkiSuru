@@ -188,6 +188,11 @@ const state = {
     info: null
   },
   showBoxes: true,
+  liveTextMode: false,
+  livePopupBlockId: null,
+  showPopupRomaji: true,
+  isViewerFullscreen: false,
+  preFsShowBoxes: true,
   drawMode: false,
   zoom: 1.0,
   fitMode: true,
@@ -250,6 +255,10 @@ const el = {
   selectOcrEngine: document.getElementById('selectOcrEngine'),
   selectReadingOrder: document.getElementById('selectReadingOrder'),
   selectWorkerPoolSize: document.getElementById('selectWorkerPoolSize'),
+  helperDetector: document.getElementById('helperDetector'),
+  helperOcrEngine: document.getElementById('helperOcrEngine'),
+  helperReadingOrder: document.getElementById('helperReadingOrder'),
+  helperWorkerPool: document.getElementById('helperWorkerPool'),
   chkAutoPruneNonJp: document.getElementById('chkAutoPruneNonJp'),
   inputBackendUrl: document.getElementById('inputBackendUrl'),
   btnConnectBackend: document.getElementById('btnConnectBackend'),
@@ -283,6 +292,7 @@ const el = {
   btnPrevPage: document.getElementById('btnPrevPage'),
   btnNextPage: document.getElementById('btnNextPage'),
   activePageTitle: document.getElementById('activePageTitle'),
+  btnSelectTextMode: document.getElementById('btnSelectTextMode'),
   btnToggleBoxes: document.getElementById('btnToggleBoxes'),
   iconBoxesOn: document.getElementById('iconBoxesOn'),
   iconBoxesOff: document.getElementById('iconBoxesOff'),
@@ -290,11 +300,34 @@ const el = {
   btnDrawBoxMode: document.getElementById('btnDrawBoxMode'),
   btnDeleteSelectedBox: document.getElementById('btnDeleteSelectedBox'),
   btnRedetectPage: document.getElementById('btnRedetectPage'),
+  viewerSection: document.getElementById('viewerSection'),
   btnZoomOut: document.getElementById('btnZoomOut'),
   btnZoomFit: document.getElementById('btnZoomFit'),
   btnZoomIn: document.getElementById('btnZoomIn'),
+  btnToggleFullscreen: document.getElementById('btnToggleFullscreen'),
+  fsFloatingHud: document.getElementById('fsFloatingHud'),
+  btnFsPrevPage: document.getElementById('btnFsPrevPage'),
+  fsPageCounter: document.getElementById('fsPageCounter'),
+  btnFsNextPage: document.getElementById('btnFsNextPage'),
+  btnFsSelectText: document.getElementById('btnFsSelectText'),
+  btnExitFullscreen: document.getElementById('btnExitFullscreen'),
   drawModeBanner: document.getElementById('drawModeBanner'),
   btnExitDrawMode: document.getElementById('btnExitDrawMode'),
+  liveTextBanner: document.getElementById('liveTextBanner'),
+  liveBannerStatusText: document.getElementById('liveBannerStatusText'),
+  btnCopySelectedLiveText: document.getElementById('btnCopySelectedLiveText'),
+  btnExitLiveTextMode: document.getElementById('btnExitLiveTextMode'),
+  liveSelectionCard: document.getElementById('liveSelectionCard'),
+  liveSelMetaLabel: document.getElementById('liveSelMetaLabel'),
+  btnTogglePopupRomaji: document.getElementById('btnTogglePopupRomaji'),
+  btnSelectWholeBubble: document.getElementById('btnSelectWholeBubble'),
+  liveSelectionCopyChip: document.getElementById('liveSelectionCopyChip'),
+  btnClearLiveSelection: document.getElementById('btnClearLiveSelection'),
+  liveSelPreviewBody: document.getElementById('liveSelPreviewBody'),
+  liveSelRomajiWrap: document.getElementById('liveSelRomajiWrap'),
+  liveSelRomajiLabel: document.getElementById('liveSelRomajiLabel'),
+  btnCopyPopupRomaji: document.getElementById('btnCopyPopupRomaji'),
+  liveSelRomajiBody: document.getElementById('liveSelRomajiBody'),
   viewerViewport: document.getElementById('viewerViewport'),
   btnSideNavPrev: document.getElementById('btnSideNavPrev'),
   btnSideNavNext: document.getElementById('btnSideNavNext'),
@@ -337,7 +370,7 @@ function showToast(message, kind) {
     : kind === 'warn'
     ? 'bg-amber-600 text-white'
     : 'bg-slate-900 text-white';
-  toast.className = 'pointer-events-auto px-3.5 py-2.5 rounded-xl shadow-lg text-xs font-medium transition-opacity duration-300 max-w-xs ' + bg;
+  toast.className = 'pointer-events-auto px-3.5 py-2.5 rounded shadow-md text-xs font-medium transition-opacity duration-300 max-w-xs ' + bg;
   toast.textContent = message;
   el.toastContainer.appendChild(toast);
   setTimeout(() => {
@@ -1100,4 +1133,5 @@ async function fetchWithProgressCached(cacheKey, url, label, basePct, spanPct) {
   await idbPut(cacheKey, buffer);
   return buffer;
 }
+
 
