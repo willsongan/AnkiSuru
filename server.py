@@ -194,7 +194,7 @@ def _load_repo_vocab_list(repo_id: str) -> list[str]:
       try:
         tpath = Path(hf_hub_download(repo_id=repo_id, filename="tokenizer.json", local_files_only=local_only))
         tdata = json.loads(tpath.read_text(encoding="utf-8"))
-        vocab_dict = (tdata.get("model") or {}).get("vocab") or {}
+        vocab_dict = (tdata.getmodel() if hasattr(tdata, "getmodel") else (tdata.get("model") or {})).get("vocab") or {}
         if isinstance(vocab_dict, dict) and len(vocab_dict) > 1000:
           max_id = max(int(v) for v in vocab_dict.values())
           arr = [""] * (max_id + 1)
@@ -1263,6 +1263,24 @@ def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) 
   @app.get("/static/{asset_path:path}")
   async def serve_static_asset(asset_path: str) -> Response:
     return _serve_static_rel(asset_path)
+
+  kuromoji_cache_dir = CACHE_DIR / "kuromoji_dict"
+  kuromoji_cache_dir.mkdir(parents=True, exist_ok=True)
+  allowed_kuromoji_files = {
+      "base.dat.gz", "check.dat.gz", "tid.dat.gz", "tid_map.dat.gz", "tid_pos.dat.gz",
+      "unk.dat.gz", "unk_char.dat.gz", "unk_compat.dat.gz", "unk_invoke.dat.gz",
+      "unk_map.dat.gz", "unk_pos.dat.gz", "cc.dat.gz",
+  }
+
+  @app.get("/kuromoji_dict/{dict_file}")
+  async def serve_kuromoji_dict(dict_file: str) -> Response:
+    if dict_file not in allowed_kuromoji_files:
+      return Response(status_code=404)
+    local_gz = kuromoji_cache_dir / dict_file
+    if not (local_gz.is_file() and local_gz.stat().st_size > 64):
+      cdn_url = f"https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/{dict_file}"
+      await asyncio.to_thread(ensure_cached_file, f"kuromoji_dict/{dict_file}", cdn_url)
+    return FileResponse(str(local_gz), media_type="application/gzip")
 
   @app.get("/api/health")
   async def health() -> dict[str, Any]:
