@@ -1038,6 +1038,12 @@ function syncLiveSelectionUI() {
   }
   const needsReview = isBlockBelowReviewThreshold(info.blk, info.page);
   const confPct = typeof info.blk.charConf === 'number' ? Math.round(info.blk.charConf * 100) : null;
+  if (el.btnVerifyPopupBubble) {
+    el.btnVerifyPopupBubble.classList.toggle('hidden', !needsReview);
+  }
+  if (el.btnDeletePopupBubble) {
+    el.btnDeletePopupBubble.classList.toggle('hidden', !needsReview);
+  }
   if (el.liveSelMetaLabel) {
     el.liveSelMetaLabel.classList.toggle('is-low-conf', Boolean(needsReview));
     if (needsReview) {
@@ -1240,6 +1246,41 @@ if (el.btnCopyPopupRomaji) {
     }
   });
 }
+if (el.btnVerifyPopupBubble) {
+  el.btnVerifyPopupBubble.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnVerifyPopupBubble.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const info = getActivePopupBlockInfo();
+    if (!info) return;
+    info.blk.verified = true;
+    updatePageCardInPlace(info.page);
+    renderOverlayBoxes();
+    syncLiveSelectionUI();
+    positionOpenLivePopup();
+    renderRightPanel();
+    showToast('Verified bubble #' + info.index + '!');
+  });
+}
+if (el.btnDeletePopupBubble) {
+  el.btnDeletePopupBubble.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnDeletePopupBubble.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const info = getActivePopupBlockInfo();
+    if (!info || state.isExtracting) return;
+    const removedNum = info.index;
+    closeLiveBubblePopup();
+    deleteBlockById(info.page, info.blk.id);
+    showToast('Deleted bubble #' + removedNum);
+  });
+}
 if (el.btnClearLiveSelection) {
   el.btnClearLiveSelection.addEventListener('pointerdown', (ev) => {
     ev.preventDefault();
@@ -1394,9 +1435,21 @@ if (el.viewerSection) {
   el.viewerSection.addEventListener('pointerdown', wakeFullscreenHud, { passive: true });
 }
 
-// Right Panel Tabs & Export Actions
+// Right Panel Tabs, Sidebar Review Filter & Export Actions
 el.tabBtnAllText.addEventListener('click', () => setActiveTab('all'));
 el.tabBtnPageBubbles.addEventListener('click', () => setActiveTab('bubbles'));
+if (el.tabBtnReviewQueue) {
+  el.tabBtnReviewQueue.addEventListener('click', () => setActiveTab('review'));
+}
+if (el.btnSidebarReviewFilter) {
+  el.btnSidebarReviewFilter.addEventListener('click', () => {
+    state.filterReviewPagesOnly = !state.filterReviewPagesOnly;
+    if (state.filterReviewPagesOnly && state.activeTab !== 'review') {
+      setActiveTab('review');
+    }
+    renderPageList();
+  });
+}
 
 el.chkIncludeHeaders.addEventListener('change', () => {
   state.includeHeaders = el.chkIncludeHeaders.checked;

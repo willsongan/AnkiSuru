@@ -1,5 +1,19 @@
 "use strict";
 
+// Initialize Review Queue state & DOM references (modularized so core-and-study.js stays untouched)
+if (typeof state === 'object' && state) {
+  if (state.filterReviewPagesOnly === undefined) state.filterReviewPagesOnly = false;
+  if (state.reviewQueuePageId === undefined) state.reviewQueuePageId = null;
+}
+if (typeof el === 'object' && el) {
+  if (!el.btnSidebarReviewFilter) el.btnSidebarReviewFilter = document.getElementById('btnSidebarReviewFilter');
+  if (!el.btnVerifyPopupBubble) el.btnVerifyPopupBubble = document.getElementById('btnVerifyPopupBubble');
+  if (!el.btnDeletePopupBubble) el.btnDeletePopupBubble = document.getElementById('btnDeletePopupBubble');
+  if (!el.tabBtnReviewQueue) el.tabBtnReviewQueue = document.getElementById('tabBtnReviewQueue');
+  if (!el.reviewQueueCountBadge) el.reviewQueueCountBadge = document.getElementById('reviewQueueCountBadge');
+  if (!el.panelReviewQueue) el.panelReviewQueue = document.getElementById('panelReviewQueue');
+}
+
 // -----------------------------------------------------------------------
 // Rendering Functions
 // -----------------------------------------------------------------------
@@ -63,12 +77,38 @@ function applyPageStatusBadgeStyle(statusBadge, page) {
 }
 
 // O(1) incremental card update so 200+ page volumes never rebuild 200+ DOM nodes on every bubble
+function syncSidebarReviewFilterPill() {
+  const volRev = countVolumeReviewBlocks();
+  const pagesWithRev = state.pages.filter((p) => countPageReviewBlocks(p) > 0).length;
+  if (volRev === 0 && state.filterReviewPagesOnly) {
+    state.filterReviewPagesOnly = false;
+  }
+  if (el.btnSidebarReviewFilter) {
+    const showPill = volRev > 0 || state.filterReviewPagesOnly;
+    el.btnSidebarReviewFilter.classList.toggle('hidden', !showPill);
+    el.btnSidebarReviewFilter.classList.toggle('is-active', Boolean(state.filterReviewPagesOnly));
+    el.btnSidebarReviewFilter.setAttribute('aria-pressed', state.filterReviewPagesOnly ? 'true' : 'false');
+    el.btnSidebarReviewFilter.textContent = state.filterReviewPagesOnly
+      ? ('⚠ ' + pagesWithRev + 'p ×')
+      : ('⚠ ' + volRev);
+    el.btnSidebarReviewFilter.title = state.filterReviewPagesOnly
+      ? 'Showing only pages with <90% OCR bubbles — click to show all pages'
+      : (volRev + ' <90% OCR bubble(s) across ' + pagesWithRev + ' page(s) — click to filter pages & open Review Queue');
+  }
+}
+
 function updatePageCardInPlace(page) {
   if (!page) return;
+  syncSidebarReviewFilterPill();
   const card = el.pageListContainer.querySelector('[data-page-id="' + page.id + '"]');
   if (!card) return;
   const badge = card.querySelector('[data-role="status"]');
   if (badge) applyPageStatusBadgeStyle(badge, page);
+  if (state.filterReviewPagesOnly) {
+    card.classList.toggle('hidden', countPageReviewBlocks(page) === 0);
+  } else {
+    card.classList.remove('hidden');
+  }
   const prev = card.querySelector('[data-role="preview"]');
   if (prev) {
     prev.textContent = page.fullText
@@ -79,7 +119,17 @@ function updatePageCardInPlace(page) {
 
 function renderPageList() {
   const count = state.pages.length;
-  el.pagesSummaryCount.textContent = count + (count === 1 ? ' page loaded' : ' pages loaded');
+  if (typeof reviewThumbImageCache !== 'undefined' && reviewThumbImageCache.size > 0) {
+    const validUrls = new Set(state.pages.map((p) => p.url));
+    for (const u of Array.from(reviewThumbImageCache.keys())) {
+      if (!validUrls.has(u)) reviewThumbImageCache.delete(u);
+    }
+  }
+  syncSidebarReviewFilterPill();
+  const flaggedPagesCount = state.pages.filter((p) => countPageReviewBlocks(p) > 0).length;
+  el.pagesSummaryCount.textContent = state.filterReviewPagesOnly
+    ? (flaggedPagesCount + ' of ' + count + ' pages <90%')
+    : (count + (count === 1 ? ' page loaded' : ' pages loaded'));
   el.detectAllBoxesLabel.textContent = count > 0
     ? 'Detect All Boxes (' + count + ')'
     : 'Detect All Boxes';
@@ -136,6 +186,17 @@ function renderPageList() {
     const statusBadge = document.createElement('span');
     statusBadge.setAttribute('data-role', 'status');
     applyPageStatusBadgeStyle(statusBadge, page);
+    statusBadge.addEventListener('click', (ev) => {
+      if (countPageReviewBlocks(page) > 0) {
+        ev.stopPropagation();
+        const firstLow = (page.blocks || []).find((b) => isBlockBelowReviewThreshold(b, page));
+        state.reviewQueuePageId = null;
+        setActiveTab('review');
+        if (firstLow) {
+          focusBlockOnStage(idx, firstLow.id);
+        }
+      }
+    });
     titleRow.appendChild(numSpan);
     titleRow.appendChild(statusBadge);
 
@@ -241,6 +302,9 @@ function renderPageList() {
       quickExtractSinglePage(page);
     });
 
+    if (state.filterReviewPagesOnly && countPageReviewBlocks(page) === 0) {
+      card.classList.add('hidden');
+    }
     el.pageListContainer.appendChild(card);
   });
 }
@@ -844,41 +908,452 @@ function buildCombinedMangaTranscript() {
   return chunks.join('\n\n');
 }
 
-function jumpToNextLowConfidenceBubble() {
-  if (state.pages.length === 0) return;
-  const curPageIdx = Math.max(0, state.pages.findIndex((p) => p.id === state.selectedPageId));
-  for (let offset = 0; offset < state.pages.length; offset++) {
-    const pIdx = (curPageIdx + offset) % state.pages.length;
-    const p = state.pages[pIdx];
-    if (!p || !Array.isArray(p.blocks)) continue;
-    const curBlkIdx = offset === 0
-      ? p.blocks.findIndex((b) => b.id === state.selectedBlockId)
-      : -1;
-    for (let bStep = 1; bStep <= p.blocks.length; bStep++) {
-      const bIdx = offset === 0
-        ? (curBlkIdx + bStep) % p.blocks.length
-        : bStep - 1;
-      const cand = p.blocks[bIdx];
-      if (isBlockBelowReviewThreshold(cand, p)) {
-        if (p.id !== state.selectedPageId) {
-          goToPageIndex(pIdx, { animateSlide: true });
-        }
-        state.selectedBlockId = cand.id;
-        if (state.activeTab !== 'bubbles') {
-          setActiveTab('bubbles');
-        } else {
-          renderOverlayBoxes();
-          renderRightPanel();
-        }
-        setTimeout(() => {
-          const cardEl = el.panelPageBubbles.querySelector('[data-block-card="' + cand.id + '"]');
-          if (cardEl) cardEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }, 30);
-        return;
+const reviewThumbImageCache = new Map();
+
+function collectAllLowConfidenceItems() {
+  const items = [];
+  state.pages.forEach((page, pageIdx) => {
+    if (!page || !Array.isArray(page.blocks)) return;
+    page.blocks.forEach((blk, blkIdx) => {
+      if (isBlockBelowReviewThreshold(blk, page)) {
+        const hasTxt = Boolean((blk.text || '').trim());
+        const confPct = typeof blk.charConf === 'number' && blk.charConf > 0
+          ? Math.round(blk.charConf * 100)
+          : null;
+        items.push({ page, pageIdx, blk, blkIdx, confPct, isEmpty: !hasTxt });
       }
+    });
+  });
+  return items;
+}
+
+function scrollViewportToBlockIfNeeded(page, blk) {
+  if (!page || !blk || !el.viewerViewport || !el.stageImageWrapper) return;
+  requestAnimationFrame(() => {
+    const boxEl = el.bboxOverlayLayer.querySelector('[data-bbox-id="' + blk.id + '"]');
+    if (!boxEl) return;
+    const vpRect = el.viewerViewport.getBoundingClientRect();
+    const bxRect = boxEl.getBoundingClientRect();
+    const outVert = bxRect.top < vpRect.top + 24 || bxRect.bottom > vpRect.bottom - 24;
+    const outHoriz = bxRect.left < vpRect.left + 24 || bxRect.right > vpRect.right - 24;
+    if (outVert || outHoriz) {
+      boxEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
     }
+  });
+}
+
+function focusBlockOnStage(pageIdx, blockId, opts) {
+  const options = opts || {};
+  const targetPage = state.pages[pageIdx];
+  if (!targetPage) return;
+  if (targetPage.id !== state.selectedPageId) {
+    goToPageIndex(pageIdx, { animateSlide: options.animateSlide !== false });
   }
-  showToast('All extracted bubbles are ≥90% confidence or verified!');
+  state.selectedBlockId = blockId;
+  if (state.liveTextMode) {
+    if (typeof openLiveBubblePopup === 'function') {
+      openLiveBubblePopup(blockId);
+    }
+  } else {
+    state.showBoxes = true;
+    renderOverlayBoxes();
+  }
+  const blk = (targetPage.blocks || []).find((b) => b.id === blockId);
+  if (blk) {
+    scrollViewportToBlockIfNeeded(targetPage, blk);
+  }
+  if (options.skipRightRender !== true) {
+    renderRightPanel();
+  }
+}
+
+function jumpToLowConfidenceByStep(stepDir) {
+  const allItems = collectAllLowConfidenceItems();
+  if (allItems.length === 0) {
+    showToast('All extracted bubbles are ≥90% confidence or verified!');
+    return false;
+  }
+  const dir = stepDir < 0 ? -1 : 1;
+  const curIdx = allItems.findIndex(
+    (it) => it.page.id === state.selectedPageId && it.blk.id === state.selectedBlockId
+  );
+  let nextItem = null;
+  if (curIdx >= 0) {
+    const nextPos = (curIdx + dir + allItems.length) % allItems.length;
+    nextItem = allItems[nextPos];
+  } else {
+    const curPageIdx = Math.max(0, state.pages.findIndex((p) => p.id === state.selectedPageId));
+    nextItem = dir > 0
+      ? (allItems.find((it) => it.pageIdx >= curPageIdx) || allItems[0])
+      : ([...allItems].reverse().find((it) => it.pageIdx <= curPageIdx) || allItems[allItems.length - 1]);
+  }
+  if (state.reviewQueuePageId && state.reviewQueuePageId !== nextItem.page.id) {
+    state.reviewQueuePageId = null;
+  }
+  if (state.activeTab !== 'review' && state.activeTab !== 'bubbles') {
+    state.activeTab = 'review';
+    syncTabBarClasses();
+  }
+  focusBlockOnStage(nextItem.pageIdx, nextItem.blk.id);
+  setTimeout(() => {
+    const container = state.activeTab === 'review' ? el.panelReviewQueue : el.panelPageBubbles;
+    if (!container) return;
+    const cardEl = container.querySelector('[data-block-card="' + nextItem.blk.id + '"]');
+    if (cardEl) cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, 30);
+  return true;
+}
+
+function jumpToNextLowConfidenceBubble() {
+  return jumpToLowConfidenceByStep(1);
+}
+
+function drawBubbleCropPreview(canvasEl, page, blk) {
+  if (!canvasEl || !page || !blk) return;
+  const W = 72;
+  const H = 64;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvasEl.width = Math.round(W * dpr);
+  canvasEl.height = Math.round(H * dpr);
+  const ctx = canvasEl.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  const paintFromImg = (im) => {
+    const sx = Math.max(0, blk.x1);
+    const sy = Math.max(0, blk.y1);
+    const sw = Math.max(1, Math.min((im.naturalWidth || page.width) - sx, blk.x2 - blk.x1));
+    const sh = Math.max(1, Math.min((im.naturalHeight || page.height) - sy, blk.y2 - blk.y1));
+    const scale = Math.min((W - 6) / sw, (H - 6) / sh);
+    const dw = Math.max(1, sw * scale);
+    const dh = Math.max(1, sh * scale);
+    const dx = (W - dw) * 0.5;
+    const dy = (H - dh) * 0.5;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, W, H);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(im, sx, sy, sw, sh, dx, dy, dw, dh);
+  };
+
+  if (
+    state.selectedPageId === page.id &&
+    el.activePageImage &&
+    el.activePageImage.complete &&
+    el.activePageImage.naturalWidth > 0
+  ) {
+    paintFromImg(el.activePageImage);
+    return;
+  }
+  const cached = reviewThumbImageCache.get(page.url);
+  if (cached && cached.complete && cached.naturalWidth > 0) {
+    paintFromImg(cached);
+    return;
+  }
+  const im = new Image();
+  im.decoding = 'async';
+  im.onload = () => {
+    reviewThumbImageCache.set(page.url, im);
+    if (canvasEl.isConnected) paintFromImg(im);
+  };
+  im.src = page.url;
+}
+
+function advanceAfterResolvingReviewItem(anchorPageIdx) {
+  const remaining = collectAllLowConfidenceItems();
+  if (remaining.length === 0) {
+    state.selectedBlockId = null;
+    state.reviewQueuePageId = null;
+    renderAll();
+    showToast('All <90% OCR bubbles reviewed!');
+    return;
+  }
+  if (state.reviewQueuePageId && !remaining.some((it) => it.page.id === state.reviewQueuePageId)) {
+    state.reviewQueuePageId = null;
+  }
+  const pool = state.reviewQueuePageId
+    ? remaining.filter((it) => it.page.id === state.reviewQueuePageId)
+    : remaining;
+  const nextIt = pool.find((it) => it.pageIdx >= anchorPageIdx) || pool[0];
+  focusBlockOnStage(nextIt.pageIdx, nextIt.blk.id);
+}
+
+function renderReviewQueuePanel(allReviewItems) {
+  if (!el.panelReviewQueue) return;
+  const prevScroll = el.panelReviewQueue.scrollTop;
+  el.panelReviewQueue.innerHTML = '';
+
+  const totalCount = allReviewItems.length;
+  const anyExtracted = state.pages.some((p) => p.status === 'done' || (p.blocks || []).some((b) => Boolean((b.text || '').trim())));
+
+  if (totalCount === 0) {
+    const emptyBox = document.createElement('div');
+    emptyBox.className = 'mt-4 rounded-lg border p-6 text-center space-y-2 ' +
+      (anyExtracted ? 'border-emerald-200 bg-emerald-50/50' : 'border-slate-200 bg-slate-50');
+    const titleP = document.createElement('p');
+    titleP.className = 'text-sm font-medium ' + (anyExtracted ? 'text-emerald-900' : 'text-slate-800');
+    titleP.textContent = anyExtracted
+      ? '✓ Zero bubbles need review'
+      : 'No <90% OCR bubbles queued yet';
+    const subP = document.createElement('p');
+    subP.className = 'text-xs text-slate-500 leading-relaxed';
+    subP.textContent = anyExtracted
+      ? 'Every extracted bubble across your loaded pages scored 90%+ confidence or has been verified.'
+      : 'Double-click any manga page or click "Extract All Japanese Text" — any speech bubble scoring under 90% OCR confidence will appear here for 1-click review or deletion.';
+    emptyBox.appendChild(titleP);
+    emptyBox.appendChild(subP);
+    el.panelReviewQueue.appendChild(emptyBox);
+    return;
+  }
+
+  // Group counts per page for quick page jump chips
+  const pageGroups = [];
+  const seenPageIds = new Map();
+  allReviewItems.forEach((it) => {
+    if (!seenPageIds.has(it.page.id)) {
+      const g = { page: it.page, pageIdx: it.pageIdx, count: 0, firstBlkId: it.blk.id };
+      seenPageIds.set(it.page.id, g);
+      pageGroups.push(g);
+    }
+    seenPageIds.get(it.page.id).count++;
+  });
+
+  if (state.reviewQueuePageId && !seenPageIds.has(state.reviewQueuePageId)) {
+    state.reviewQueuePageId = null;
+  }
+
+  const filteredItems = state.reviewQueuePageId
+    ? allReviewItems.filter((it) => it.page.id === state.reviewQueuePageId)
+    : allReviewItems;
+
+  const activePos = allReviewItems.findIndex(
+    (it) => it.page.id === state.selectedPageId && it.blk.id === state.selectedBlockId
+  );
+  const emptyItems = allReviewItems.filter((it) => it.isEmpty);
+
+  // Sticky Top Review Navigation & Batch Bar
+  const stickyHeader = document.createElement('div');
+  stickyHeader.className = 'md-review-sticky-bar space-y-2';
+
+  const topRow = document.createElement('div');
+  topRow.className = 'flex flex-wrap items-center justify-between gap-2';
+
+  const summaryLabel = document.createElement('span');
+  summaryLabel.className = 'text-xs font-medium text-amber-900';
+  summaryLabel.textContent = totalCount + (totalCount === 1 ? ' bubble' : ' bubbles') +
+    ' <90% · ' + pageGroups.length + (pageGroups.length === 1 ? ' page' : ' pages');
+  topRow.appendChild(summaryLabel);
+
+  const navRight = document.createElement('div');
+  navRight.className = 'flex items-center gap-1.5 ml-auto';
+
+  if (emptyItems.length > 0) {
+    const btnDelEmpty = document.createElement('button');
+    btnDelEmpty.type = 'button';
+    btnDelEmpty.className = 'md-popup-del-btn';
+    btnDelEmpty.textContent = 'Delete Empty (' + emptyItems.length + ')';
+    btnDelEmpty.title = 'Remove all empty 0-character boxes across loaded pages';
+    btnDelEmpty.addEventListener('click', () => {
+      if (state.isExtracting) return;
+      state.pages.forEach((p) => {
+        if (!p.blocks) return;
+        const before = p.blocks.length;
+        p.blocks = p.blocks.filter((b) => !(isBlockBelowReviewThreshold(b, p) && !(b.text || '').trim()));
+        if (p.blocks.length !== before) updatePageFullText(p);
+      });
+      renderAll();
+      showToast('Removed ' + emptyItems.length + ' empty box(es).');
+    });
+    navRight.appendChild(btnDelEmpty);
+  }
+
+  const stepper = document.createElement('div');
+  stepper.className = 'viewer-capsule';
+
+  const btnPrevRev = document.createElement('button');
+  btnPrevRev.type = 'button';
+  btnPrevRev.className = 'px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100 rounded';
+  btnPrevRev.textContent = '← Prev';
+  btnPrevRev.title = 'Jump to previous <90% OCR bubble';
+  btnPrevRev.addEventListener('click', () => jumpToLowConfidenceByStep(-1));
+
+  const stepPos = document.createElement('span');
+  stepPos.className = 'px-2 text-[11px] font-medium text-slate-600 tabular-nums select-none';
+  stepPos.textContent = (activePos >= 0 ? (activePos + 1) : '–') + ' / ' + totalCount;
+
+  const btnNextRev = document.createElement('button');
+  btnNextRev.type = 'button';
+  btnNextRev.className = 'px-2 py-0.5 text-[11px] font-medium text-indigo-700 hover:bg-indigo-50 rounded';
+  btnNextRev.textContent = 'Next →';
+  btnNextRev.title = 'Jump to next <90% OCR bubble';
+  btnNextRev.addEventListener('click', () => jumpToLowConfidenceByStep(1));
+
+  stepper.appendChild(btnPrevRev);
+  stepper.appendChild(stepPos);
+  stepper.appendChild(btnNextRev);
+  navRight.appendChild(stepper);
+  topRow.appendChild(navRight);
+  stickyHeader.appendChild(topRow);
+
+  // Page Quick-Jump Filter Chips Row
+  const chipsRow = document.createElement('div');
+  chipsRow.className = 'flex items-center gap-1.5 overflow-x-auto custom-scroll pb-0.5';
+
+  const allChip = document.createElement('button');
+  allChip.type = 'button';
+  allChip.className = 'md-review-page-chip' + (!state.reviewQueuePageId ? ' is-active' : '');
+  allChip.textContent = 'All (' + totalCount + ')';
+  allChip.addEventListener('click', () => {
+    state.reviewQueuePageId = null;
+    renderRightPanel();
+  });
+  chipsRow.appendChild(allChip);
+
+  pageGroups.forEach((g) => {
+    const pChip = document.createElement('button');
+    pChip.type = 'button';
+    const isAct = state.reviewQueuePageId === g.page.id;
+    pChip.className = 'md-review-page-chip' + (isAct ? ' is-active' : '');
+    pChip.textContent = 'P.' + (g.pageIdx + 1) + ' (' + g.count + ')';
+    pChip.title = 'Jump to Page ' + (g.pageIdx + 1) + ' (' + g.page.name + ')';
+    pChip.addEventListener('click', () => {
+      state.reviewQueuePageId = isAct ? null : g.page.id;
+      focusBlockOnStage(g.pageIdx, g.firstBlkId);
+    });
+    chipsRow.appendChild(pChip);
+  });
+  stickyHeader.appendChild(chipsRow);
+  el.panelReviewQueue.appendChild(stickyHeader);
+
+  // Render Each <90% Review Card with Live Manga Bubble Crop + Inline Edit + 1-Click Verify / Delete
+  filteredItems.forEach((it) => {
+    const isSel = it.page.id === state.selectedPageId && it.blk.id === state.selectedBlockId;
+    const card = document.createElement('div');
+    card.setAttribute('data-block-card', it.blk.id);
+    card.className =
+      'rounded-md border p-2.5 transition ' +
+      (isSel
+        ? 'border-2 border-amber-500 bg-amber-50/80 shadow-sm'
+        : 'border-amber-300 bg-amber-50/35 hover:border-amber-400');
+
+    const topBar = document.createElement('div');
+    topBar.className = 'flex flex-wrap items-center justify-between gap-1.5 mb-2';
+
+    const locLeft = document.createElement('div');
+    locLeft.className = 'flex items-center gap-1.5';
+
+    const jumpBtn = document.createElement('button');
+    jumpBtn.type = 'button';
+    jumpBtn.className =
+      'inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium transition ' +
+      (isSel
+        ? 'bg-rose-600 text-white'
+        : 'bg-white border border-amber-300 text-slate-800 hover:bg-amber-100');
+    jumpBtn.textContent = 'Page ' + (it.pageIdx + 1) + ' · #' + (it.blkIdx + 1);
+    jumpBtn.title = 'Jump to Page ' + (it.pageIdx + 1) + ', Bubble #' + (it.blkIdx + 1) + ' on the manga viewer';
+    jumpBtn.addEventListener('click', () => {
+      focusBlockOnStage(it.pageIdx, it.blk.id);
+    });
+
+    const confTag = document.createElement('span');
+    confTag.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-200/80 text-amber-950 border border-amber-400 tabular-nums';
+    confTag.textContent = it.confPct !== null ? (it.confPct + '% OCR') : 'Empty OCR';
+
+    locLeft.appendChild(jumpBtn);
+    locLeft.appendChild(confTag);
+
+    const actRight = document.createElement('div');
+    actRight.className = 'flex items-center gap-1 ml-auto';
+
+    const btnKeep = document.createElement('button');
+    btnKeep.type = 'button';
+    btnKeep.className = 'md-popup-verify-btn';
+    btnKeep.textContent = '✓ Verify';
+    btnKeep.title = 'Confirm text is accurate and jump to next <90% bubble (or press Ctrl+Enter in text box)';
+    btnKeep.addEventListener('click', () => {
+      it.blk.verified = true;
+      updatePageCardInPlace(it.page);
+      advanceAfterResolvingReviewItem(it.pageIdx);
+    });
+
+    const btnReOcr = document.createElement('button');
+    btnReOcr.type = 'button';
+    btnReOcr.disabled = state.isExtracting;
+    btnReOcr.className = 'md-btn-outlined px-2 py-0.5 rounded text-[11px] font-medium';
+    btnReOcr.textContent = 'OCR';
+    btnReOcr.title = 'Re-run OCR on this bubble';
+    btnReOcr.addEventListener('click', () => {
+      focusBlockOnStage(it.pageIdx, it.blk.id, { skipRightRender: true });
+      ocrSingleBlockById(it.page, it.blk.id);
+    });
+
+    const btnDel = document.createElement('button');
+    btnDel.type = 'button';
+    btnDel.disabled = state.isExtracting;
+    btnDel.className = 'md-popup-del-btn';
+    btnDel.textContent = 'Delete';
+    btnDel.title = 'Delete this false or unwanted bounding box and jump to next <90% bubble';
+    btnDel.addEventListener('click', () => {
+      if (state.isExtracting) return;
+      it.page.blocks = it.page.blocks.filter((b) => b.id !== it.blk.id);
+      updatePageFullText(it.page);
+      updatePageCardInPlace(it.page);
+      advanceAfterResolvingReviewItem(it.pageIdx);
+    });
+
+    actRight.appendChild(btnKeep);
+    actRight.appendChild(btnReOcr);
+    actRight.appendChild(btnDel);
+
+    topBar.appendChild(locLeft);
+    topBar.appendChild(actRight);
+    card.appendChild(topBar);
+
+    const bodyRow = document.createElement('div');
+    bodyRow.className = 'flex items-stretch gap-2';
+
+    const thumbCanvas = document.createElement('canvas');
+    thumbCanvas.className = 'md-crop-thumb';
+    thumbCanvas.title = 'Click to jump to Page ' + (it.pageIdx + 1) + ', Bubble #' + (it.blkIdx + 1);
+    drawBubbleCropPreview(thumbCanvas, it.page, it.blk);
+    thumbCanvas.addEventListener('click', () => {
+      focusBlockOnStage(it.pageIdx, it.blk.id);
+    });
+
+    const ta = document.createElement('textarea');
+    ta.rows = 2;
+    ta.placeholder = 'Empty OCR — type Japanese text (Ctrl+Enter to verify) or click Delete…';
+    ta.value = it.blk.text || '';
+    ta.style.fontSize = Math.max(14, state.jpFontSize) + 'px';
+    ta.className = 'jp-text flex-1 min-w-0 rounded border border-amber-400 bg-white px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500 resize-y';
+    ta.addEventListener('focus', () => {
+      if (state.selectedPageId !== it.page.id || state.selectedBlockId !== it.blk.id) {
+        focusBlockOnStage(it.pageIdx, it.blk.id, { skipRightRender: true });
+      }
+    });
+    ta.addEventListener('input', () => {
+      it.blk.text = ta.value;
+      updatePageFullText(it.page);
+      updatePageCardInPlace(it.page);
+      el.fullMangaTextarea.value = buildCombinedMangaTranscript();
+    });
+    ta.addEventListener('keydown', (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
+        ev.preventDefault();
+        it.blk.verified = true;
+        updatePageCardInPlace(it.page);
+        advanceAfterResolvingReviewItem(it.pageIdx);
+      }
+    });
+
+    bodyRow.appendChild(thumbCanvas);
+    bodyRow.appendChild(ta);
+    card.appendChild(bodyRow);
+    el.panelReviewQueue.appendChild(card);
+  });
+
+  el.panelReviewQueue.scrollTop = prevScroll;
 }
 
 function renderRightPanel() {
@@ -886,13 +1361,23 @@ function renderRightPanel() {
   const bubbleCount = page && page.blocks ? page.blocks.length : 0;
   el.currentBubbleCountBadge.textContent = String(bubbleCount);
 
-  const volReviewCount = countVolumeReviewBlocks();
+  const allReviewItems = collectAllLowConfidenceItems();
+  const volReviewCount = allReviewItems.length;
   const pageReviewCount = page ? countPageReviewBlocks(page) : 0;
+  syncSidebarReviewFilterPill();
+
   if (el.lowConfTabBadge) {
-    const badgeNum = pageReviewCount > 0 ? pageReviewCount : volReviewCount;
-    el.lowConfTabBadge.classList.toggle('hidden', badgeNum === 0);
-    el.lowConfTabBadge.textContent = '⚠ ' + badgeNum;
+    el.lowConfTabBadge.classList.toggle('hidden', pageReviewCount === 0);
+    el.lowConfTabBadge.textContent = '⚠ ' + pageReviewCount;
   }
+  if (el.reviewQueueCountBadge) {
+    el.reviewQueueCountBadge.textContent = volReviewCount > 0 ? ('⚠ ' + volReviewCount) : '0';
+    el.reviewQueueCountBadge.className = volReviewCount > 0
+      ? 'px-1.5 py-0.2 rounded-full text-[10px] font-semibold bg-amber-500 text-white tabular-nums'
+      : 'px-1.5 py-0.2 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600 tabular-nums';
+  }
+
+  renderReviewQueuePanel(allReviewItems);
 
   const combined = buildCombinedMangaTranscript();
   el.fullMangaTextarea.value = combined;
@@ -1003,6 +1488,15 @@ function renderRightPanel() {
     revBtns.appendChild(btnFilterLow);
 
     if (hasAnyLow) {
+      const btnOpenQueue = document.createElement('button');
+      btnOpenQueue.type = 'button';
+      btnOpenQueue.className =
+        'px-2 py-0.5 rounded-lg text-[11px] font-semibold border border-amber-400 bg-white text-amber-950 hover:bg-amber-100 transition';
+      btnOpenQueue.textContent = 'All <90% (' + volReviewCount + ')';
+      btnOpenQueue.title = 'Open the unified <90% Review Queue across all pages';
+      btnOpenQueue.addEventListener('click', () => setActiveTab('review'));
+      revBtns.appendChild(btnOpenQueue);
+
       const btnJumpNext = document.createElement('button');
       btnJumpNext.type = 'button';
       btnJumpNext.className =
@@ -1475,18 +1969,24 @@ function renderRightPanel() {
   el.panelPageBubbles.scrollTop = prevBubbleScrollTop;
 }
 
+function syncTabBarClasses() {
+  const tab = state.activeTab;
+  el.tabBtnAllText.className = tab === 'all' ? 'md-tab is-active' : 'md-tab';
+  el.tabBtnPageBubbles.className =
+    (tab === 'bubbles' ? 'md-tab is-active' : 'md-tab') + ' inline-flex items-center gap-1.5';
+  if (el.tabBtnReviewQueue) {
+    el.tabBtnReviewQueue.className =
+      (tab === 'review' ? 'md-tab is-active' : 'md-tab') + ' inline-flex items-center gap-1.5';
+  }
+  el.panelAllText.classList.toggle('hidden', tab !== 'all');
+  el.panelPageBubbles.classList.toggle('hidden', tab !== 'bubbles');
+  if (el.panelReviewQueue) {
+    el.panelReviewQueue.classList.toggle('hidden', tab !== 'review');
+  }
+}
+
 function setActiveTab(tab) {
   state.activeTab = tab;
-  if (tab === 'all') {
-    el.tabBtnAllText.className = 'md-tab is-active';
-    el.tabBtnPageBubbles.className = 'md-tab inline-flex items-center gap-1.5';
-    el.panelAllText.classList.remove('hidden');
-    el.panelPageBubbles.classList.add('hidden');
-  } else {
-    el.tabBtnPageBubbles.className = 'md-tab is-active inline-flex items-center gap-1.5';
-    el.tabBtnAllText.className = 'md-tab';
-    el.panelPageBubbles.classList.remove('hidden');
-    el.panelAllText.classList.add('hidden');
-  }
+  syncTabBarClasses();
   renderRightPanel();
 }

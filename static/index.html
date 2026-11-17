@@ -279,7 +279,12 @@
     <section class="lg:col-span-3 xl:col-span-2 bg-white border-b lg:border-b-0 lg:border-r border-slate-200 flex flex-col overflow-hidden max-h-[340px] lg:max-h-none lg:h-full min-h-0">
       <div class="px-3 py-2.5 border-b border-slate-200 flex items-center justify-between gap-1.5">
         <div class="min-w-0">
-          <h2 class="text-xs font-medium text-slate-500">Pages</h2>
+          <div class="flex items-center gap-1.5">
+            <h2 class="text-xs font-medium text-slate-500">Pages</h2>
+            <button id="btnSidebarReviewFilter" type="button" aria-pressed="false" class="hidden md-review-filter-pill" title="Filter page list to show only pages with <90% OCR bubbles">
+              ⚠ 0
+            </button>
+          </div>
           <p id="pagesSummaryCount" class="text-xs font-medium text-slate-900 truncate">0 pages loaded</p>
         </div>
         <div class="flex items-center gap-0.5 shrink-0">
@@ -511,6 +516,12 @@
               <div class="md-live-sel-header">
                 <span id="liveSelMetaLabel" class="md-live-sel-badge">Selected · 0 chars</span>
                 <div class="flex items-center gap-1 ml-auto">
+                  <button id="btnVerifyPopupBubble" type="button" class="hidden md-popup-verify-btn" title="Mark this <90% OCR bubble as accurate &amp; clear yellow warning">
+                    ✓ Verify
+                  </button>
+                  <button id="btnDeletePopupBubble" type="button" class="hidden md-popup-del-btn" title="Delete this inaccurate or false speech-bubble box">
+                    Delete
+                  </button>
                   <button id="btnTogglePopupRomaji" type="button" aria-pressed="true" class="md-romaji-pill is-active" title="Show or hide instant offline Hepburn Romaji">
                     Romaji
                   </button>
@@ -553,13 +564,17 @@
     <section class="lg:col-span-4 xl:col-span-4 bg-white border-t lg:border-t-0 lg:border-l border-slate-200 flex flex-col overflow-hidden min-h-[420px] lg:min-h-0 lg:h-full">
       <!-- Classic Material Primary Tab Bar + Export Actions -->
       <div class="px-3 pt-1 border-b border-slate-200 bg-white flex flex-wrap items-center justify-between gap-2">
-        <div class="flex items-end gap-1" role="tablist">
+        <div class="flex items-end gap-0.5" role="tablist">
           <button id="tabBtnAllText" type="button" class="md-tab is-active">
             Full Manga Text
           </button>
           <button id="tabBtnPageBubbles" type="button" class="md-tab inline-flex items-center gap-1.5">
             <span>Page Bubbles (<span id="currentBubbleCountBadge">0</span>)</span>
-            <span id="lowConfTabBadge" class="hidden px-1.5 py-0.2 rounded-full text-[10px] font-medium bg-amber-500 text-white" title="Bubbles with OCR confidence below 90% needing review"></span>
+            <span id="lowConfTabBadge" class="hidden px-1.5 py-0.2 rounded-full text-[10px] font-medium bg-amber-500 text-white" title="Bubbles on this page below 90% OCR confidence"></span>
+          </button>
+          <button id="tabBtnReviewQueue" type="button" class="md-tab inline-flex items-center gap-1.5" title="Streamlined queue of all <90% OCR bubbles across every page">
+            <span>Review</span>
+            <span id="reviewQueueCountBadge" class="px-1.5 py-0.2 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600 tabular-nums">0</span>
           </button>
         </div>
 
@@ -599,6 +614,9 @@
 
       <!-- View 2: Current Page Bubbles Inspector -->
       <div id="panelPageBubbles" class="hidden flex-1 overflow-y-auto custom-scroll p-3 space-y-2"></div>
+
+      <!-- View 3: Cross-Volume <90% OCR Review Queue -->
+      <div id="panelReviewQueue" class="hidden flex-1 overflow-y-auto custom-scroll p-3 pt-0 space-y-2.5"></div>
     </section>
   </main>
 
