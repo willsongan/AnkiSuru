@@ -3,7 +3,7 @@
 // -----------------------------------------------------------------------
 // Detector 2A: Neural Turbo comic-text-and-bubble INT8 (Multi-Worker Pool)
 // -----------------------------------------------------------------------
-async function ensureRtdetrPoolReady() {
+async function ensureRtdetrPoolReady(maxNeededSlots) {
   const buf = await getCachedBufferInMemory(
     'ogkalu_det_v4s_int8_v1',
     MODEL_URLS.rtdetrInt8Primary,
@@ -12,13 +12,16 @@ async function ensureRtdetrPoolReady() {
     2,
     24
   );
-  const targetWorkers = getDesiredPoolSize('rtdetr');
-  const activeCount = await ensureWorkerPoolSize(targetWorkers);
+  const desired = getDesiredPoolSize('rtdetr');
+  const needed = typeof maxNeededSlots === 'number' && maxNeededSlots > 0
+    ? Math.min(desired, maxNeededSlots)
+    : desired;
+  const activeCount = await ensureWorkerPoolSize(needed);
   if (activeCount > 0) {
-    const usable = runtime.workerSlots.slice(0, targetWorkers);
+    const usable = runtime.workerSlots.slice(0, needed);
     const uninit = usable.filter((s) => !s.loaded.rtdetr);
     if (uninit.length > 0) {
-      setProgress(true, 'Initializing Neural Turbo Detector across ' + usable.length + ' parallel workers…', 28);
+      setProgress(true, 'Initializing Neural Turbo Detector (' + usable.length + (usable.length === 1 ? ' worker' : ' parallel workers') + ')…', 28);
       await Promise.all(uninit.map(async (slot) => {
         const copyBuf = buf.slice(0);
         await callSlot(slot, { type: 'init_rtdetr', modelBuf: copyBuf }, [copyBuf]);
@@ -38,7 +41,7 @@ async function ensureRtdetrPoolReady() {
 async function detectComicTextRtdetrInt8(imgEl) {
   const origW = imgEl.naturalWidth || imgEl.width;
   const origH = imgEl.naturalHeight || imgEl.height;
-  const mode = await ensureRtdetrPoolReady();
+  const mode = await ensureRtdetrPoolReady(1);
 
   const S = 640;
   const cvs = document.createElement('canvas');
@@ -122,7 +125,7 @@ async function detectComicTextRtdetrInt8(imgEl) {
 // -----------------------------------------------------------------------
 // Detector 2B: Neural comic-text-detector ONNX (Multi-Worker Pool + WebGPU)
 // -----------------------------------------------------------------------
-async function ensureCtdPoolReady() {
+async function ensureCtdPoolReady(maxNeededSlots) {
   const buf = await getCachedBufferInMemory(
     'ctd_onnx_v1',
     MODEL_URLS.ctdOnnx,
@@ -131,7 +134,10 @@ async function ensureCtdPoolReady() {
     2,
     24
   );
-  const targetWorkers = getDesiredPoolSize('ctd');
+  const desired = getDesiredPoolSize('ctd');
+  const targetWorkers = typeof maxNeededSlots === 'number' && maxNeededSlots > 0
+    ? Math.min(desired, maxNeededSlots)
+    : desired;
   const activeCount = await ensureWorkerPoolSize(targetWorkers);
   if (activeCount > 0) {
     const usable = runtime.workerSlots.slice(0, targetWorkers);
@@ -162,7 +168,7 @@ async function ensureCtdPoolReady() {
 async function detectComicTextOnnx(imgEl) {
   const origW = imgEl.naturalWidth || imgEl.width;
   const origH = imgEl.naturalHeight || imgEl.height;
-  const mode = await ensureCtdPoolReady();
+  const mode = await ensureCtdPoolReady(1);
 
   const S = 1024;
   const ratio = Math.min(S / origW, S / origH);
@@ -330,7 +336,7 @@ async function loadMocrVocabForVariant(variant) {
   return runtime.mocrVocabPromises[variant];
 }
 
-async function ensureMangaOcrPoolReady() {
+async function prefetchMangaOcrAssets() {
   let variant = state.ocrEngine === 'manga-ocr' ? 'manga-ocr' : 'manga-ocr-cpt';
   let encKey = variant === 'manga-ocr-cpt' ? 'mocr_cpt_enc_q8_v2' : 'mocr_enc_q8_v1';
   let decKey = variant === 'manga-ocr-cpt' ? 'mocr_cpt_dec_q8_v2' : 'mocr_dec_q8_v1';
@@ -339,23 +345,27 @@ async function ensureMangaOcrPoolReady() {
 
   if (variant === 'manga-ocr-cpt') {
     try {
-      await loadMocrVocabForVariant('manga-ocr-cpt');
-      encBuf = await getCachedBufferInMemory(
-        encKey,
-        MODEL_URLS.mocrCptEncoder,
-        MODEL_URLS.mocrCptEncoderAlt,
-        'manga-ocr-base-CPT v2 ViT Encoder',
-        8,
-        48
-      );
-      decBuf = await getCachedBufferInMemory(
-        decKey,
-        MODEL_URLS.mocrCptDecoder,
-        MODEL_URLS.mocrCptDecoderAlt,
-        'manga-ocr-base-CPT v2 Japanese Decoder',
-        58,
-        26
-      );
+      const [, eBuf, dBuf] = await Promise.all([
+        loadMocrVocabForVariant('manga-ocr-cpt'),
+        getCachedBufferInMemory(
+          encKey,
+          MODEL_URLS.mocrCptEncoder,
+          MODEL_URLS.mocrCptEncoderAlt,
+          'manga-ocr-base-CPT v2 ViT Encoder',
+          8,
+          48
+        ),
+        getCachedBufferInMemory(
+          decKey,
+          MODEL_URLS.mocrCptDecoder,
+          MODEL_URLS.mocrCptDecoderAlt,
+          'manga-ocr-base-CPT v2 Japanese Decoder',
+          58,
+          26
+        )
+      ]);
+      encBuf = eBuf;
+      decBuf = dBuf;
     } catch (cptErr) {
       if (isAbortError(cptErr)) throw new Error('ABORTED');
       variant = 'manga-ocr';
@@ -365,37 +375,49 @@ async function ensureMangaOcrPoolReady() {
   }
 
   if (!encBuf || !decBuf) {
-    await loadMocrVocabForVariant('manga-ocr');
-    encBuf = await getCachedBufferInMemory(
-      encKey,
-      MODEL_URLS.mocrEncoder,
-      null,
-      'manga-ocr ViT Encoder (87 MB)',
-      8,
-      48
-    );
-    decBuf = await getCachedBufferInMemory(
-      decKey,
-      MODEL_URLS.mocrDecoder,
-      null,
-      'manga-ocr Japanese Decoder (30 MB)',
-      58,
-      26
-    );
+    const [, eBuf, dBuf] = await Promise.all([
+      loadMocrVocabForVariant('manga-ocr'),
+      getCachedBufferInMemory(
+        encKey,
+        MODEL_URLS.mocrEncoder,
+        null,
+        'manga-ocr ViT Encoder (87 MB)',
+        8,
+        48
+      ),
+      getCachedBufferInMemory(
+        decKey,
+        MODEL_URLS.mocrDecoder,
+        null,
+        'manga-ocr Japanese Decoder (30 MB)',
+        58,
+        26
+      )
+    ]);
+    encBuf = eBuf;
+    decBuf = dBuf;
   }
 
   runtime.activeMocrVariant = variant;
   runtime.activeMocrEncKey = encKey;
   runtime.activeMocrDecKey = decKey;
+  return { variant, encKey, decKey, encBuf, decBuf };
+}
 
-  const targetWorkers = getDesiredPoolSize('mocr');
+async function ensureMangaOcrPoolReady(maxNeededSlots) {
+  const { variant, encBuf, decBuf } = await prefetchMangaOcrAssets();
+  const desired = getDesiredPoolSize('mocr');
+  const targetWorkers = typeof maxNeededSlots === 'number' && maxNeededSlots > 0
+    ? Math.min(desired, maxNeededSlots)
+    : desired;
   const activeCount = await ensureWorkerPoolSize(targetWorkers);
   if (activeCount > 0) {
     const usable = runtime.workerSlots.slice(0, targetWorkers);
     const uninit = usable.filter((s) => s.loaded.mocrVariant !== variant);
     if (uninit.length > 0) {
-      setProgress(true, 'Initializing Japanese OCR across ' + usable.length + ' parallel workers…', 88);
-      for (const slot of uninit) {
+      setProgress(true, 'Initializing Japanese OCR (' + usable.length + (usable.length === 1 ? ' worker' : ' parallel workers') + ')…', 88);
+      let firstErr = null;
+      await Promise.all(uninit.map(async (slot) => {
         try {
           const encCopy = encBuf.slice(0);
           const decCopy = decBuf.slice(0);
@@ -406,10 +428,12 @@ async function ensureMangaOcrPoolReady() {
           );
           slot.loaded.mocr = true;
           slot.loaded.mocrVariant = variant;
-        } catch (_oomErr) {
-          if (usable.some((s) => s.loaded.mocrVariant === variant)) break;
-          throw _oomErr;
+        } catch (oomErr) {
+          if (!firstErr) firstErr = oomErr;
         }
+      }));
+      if (!usable.some((s) => s.loaded.mocrVariant === variant) && firstErr) {
+        throw firstErr;
       }
     }
     return 'pool';
@@ -450,7 +474,7 @@ function decodeTokenIdsToJapanese(ids) {
 }
 
 async function recognizeCropMangaOcr(imgEl, box) {
-  const mode = await ensureMangaOcrPoolReady();
+  const mode = await ensureMangaOcrPoolReady(1);
 
   const S = 224;
   const cropW = Math.max(1, box.x2 - box.x1);
@@ -634,6 +658,19 @@ function loadImageElement(src) {
   });
 }
 
+function getFastDecodedPageImage(page) {
+  if (
+    page &&
+    state.selectedPageId === page.id &&
+    el.activePageImage &&
+    el.activePageImage.complete &&
+    el.activePageImage.naturalWidth > 0
+  ) {
+    return Promise.resolve(el.activePageImage);
+  }
+  return loadImageElement(page.url);
+}
+
 function setExtractingUI(running) {
   state.isExtracting = running;
   const noPages = state.pages.length === 0;
@@ -726,7 +763,7 @@ async function runParallelPagesDetectionInternal(pagesToDetect, progressPrefix) 
       }
 
       // 2 concurrent HTTP chunks keep CPU decode & detector 100% saturated
-      await Promise.all([detectPipeConsumer(), detectPipeConsumer()]);
+      await Promise.all(chunks.length === 1 ? [detectPipeConsumer()] : [detectPipeConsumer(), detectPipeConsumer()]);
       return totalBoxes;
     } catch (nativeErr) {
       if (isAbortError(nativeErr)) throw new Error('ABORTED');
@@ -736,11 +773,11 @@ async function runParallelPagesDetectionInternal(pagesToDetect, progressPrefix) 
     }
   }
 
-  // Fast Path 2: Browser Multi-Worker Parallel Pool
+  // Fast Path 2: Browser Multi-Worker Parallel Pool (right-sized to page count so 1-page extraction initializes 1 worker instantly)
   if (state.detectorMode === 'rtdetr-int8') {
-    await ensureRtdetrPoolReady();
+    await ensureRtdetrPoolReady(pagesToDetect.length);
   } else if (state.detectorMode === 'ctd-onnx') {
-    await ensureCtdPoolReady();
+    await ensureCtdPoolReady(pagesToDetect.length);
   }
 
   const poolConcurrency = (state.detectorMode === 'rtdetr-int8' || state.detectorMode === 'ctd-onnx')
@@ -765,7 +802,7 @@ async function runParallelPagesDetectionInternal(pagesToDetect, progressPrefix) 
         (completed / pagesToDetect.length) * 100
       );
 
-      const imgEl = await loadImageElement(page.url);
+      const imgEl = await getFastDecodedPageImage(page);
       page.blocks = await detectBlocksForPage(imgEl);
       page.boxesDetected = true;
       page.status = 'detected';
@@ -830,12 +867,27 @@ async function detectBoxesForAllPages(targetPages) {
   }
 }
 
+async function quickExtractSinglePage(page) {
+  const target = page || getSelectedPage();
+  if (!target) return;
+  if (state.isExtracting) {
+    showToast('Extraction already running…', 'warn');
+    return;
+  }
+  if (state.isViewerFullscreen) {
+    const pIdx = state.pages.findIndex((p) => p.id === target.id);
+    showToast('Extracting page ' + (pIdx >= 0 ? pIdx + 1 : '') + '…');
+  }
+  await extractPagesQueue([target]);
+}
+
 async function extractPagesQueue(targetPages) {
   if (state.isExtracting || targetPages.length === 0) return;
   state.abortRequested = false;
   state.activeOcrBlockIds.clear();
   setExtractingUI(true);
-  await acquireBackgroundKeepAlive();
+  // Non-blocking keep-alive acquisition so inference starts at 0ms without awaiting AudioContext/WakeLock
+  acquireBackgroundKeepAlive().catch(() => {});
   const t0 = performance.now();
   let totalExtractedBubbles = 0;
   let totalPrunedBoxes = 0;
@@ -946,8 +998,8 @@ async function extractPagesQueue(targetPages) {
           }
         }
 
-        // Double-buffered 2-way pipeline overlaps HTTP upload + CPU JPEG decode with RTX Tensor-Core GPU batches
-        await Promise.all([serverPipeConsumer(), serverPipeConsumer()]);
+        // Single direct request for 1-page instant extraction; 2-way pipeline for multi-page volumes
+        await Promise.all(chunks.length === 1 ? [serverPipeConsumer()] : [serverPipeConsumer(), serverPipeConsumer()]);
         handledByServerPipeline = true;
       } catch (srvErr) {
         if (isAbortError(srvErr)) throw new Error('ABORTED');
@@ -957,20 +1009,29 @@ async function extractPagesQueue(targetPages) {
       }
     }
 
-    // Fallback Path B: Browser Multi-Worker Pool with Sliding 12-Page Bitmap Window (constant low RAM on 200+ pages!)
+    // Fallback Path B: Browser Multi-Worker Pool with Overlapped OCR Prefetch & Zero-Redundant-Decode Fast Path
     if (!handledByServerPipeline) {
       const undetected = targetPages.filter((p) => !p.boxesDetected && (!p.blocks || p.blocks.length === 0));
+      // Overlap OCR model download/IDB read concurrently with Stage 1 box detection!
+      const ocrPrefetchPromise = (undetected.length > 0 && isMangaOcrFamily(state.ocrEngine))
+        ? prefetchMangaOcrAssets().catch(() => null)
+        : null;
       if (undetected.length > 0) {
         await runParallelPagesDetectionInternal(undetected, 'Stage 1/2: Detecting boxes');
       }
-
-      if (isMangaOcrFamily(state.ocrEngine)) {
-        await ensureMangaOcrPoolReady();
-      } else {
-        await ensureTesseractPoolReady();
+      if (ocrPrefetchPromise) {
+        await ocrPrefetchPromise;
       }
 
       const totalBubblesAll = targetPages.reduce((acc, p) => acc + ((p.blocks && p.blocks.length) || 0), 0);
+      if (totalBubblesAll > 0) {
+        if (isMangaOcrFamily(state.ocrEngine)) {
+          await ensureMangaOcrPoolReady(totalBubblesAll);
+        } else {
+          await ensureTesseractPoolReady();
+        }
+      }
+
       let doneBubblesGlobal = 0;
       const windowPages = 12;
 
@@ -980,7 +1041,7 @@ async function extractPagesQueue(targetPages) {
         const windowJobs = [];
         const remainingPerPage = new Map();
 
-        // Decode only up to 12 images in parallel for this sliding window so 216+ pages never spike RAM
+        // Decode only up to 12 images in parallel (reusing already-decoded activePageImage in 0ms for active page!)
         await Promise.all(pageSlice.map(async (page) => {
           if (page.blocks && page.blocks.length > 1) {
             page.blocks = sortBlocksByReadingOrder(page.blocks, state.readingOrder);
@@ -994,7 +1055,7 @@ async function extractPagesQueue(targetPages) {
           page.status = 'recognizing';
           updatePageCardInPlace(page);
           remainingPerPage.set(page.id, page.blocks.length);
-          const imgEl = await loadImageElement(page.url);
+          const imgEl = await getFastDecodedPageImage(page);
           for (let bIdx = 0; bIdx < page.blocks.length; bIdx++) {
             windowJobs.push({ page, imgEl, blk: page.blocks[bIdx] });
           }

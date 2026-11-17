@@ -829,6 +829,14 @@ html.dark .live-text-region:hover {
   background-color: rgba(138, 180, 248, 0.12);
   box-shadow: inset 0 0 0 1.5px rgba(138, 180, 248, 0.5);
 }
+.live-text-region.is-low-conf:hover {
+  background-color: rgba(249, 171, 0, 0.22);
+  box-shadow: inset 0 0 0 2px rgba(249, 171, 0, 0.92);
+}
+html.dark .live-text-region.is-low-conf:hover {
+  background-color: rgba(251, 188, 4, 0.25);
+  box-shadow: inset 0 0 0 2px #fbbc04;
+}
 .live-text-span {
   display: inline-block;
   width: 100%;
@@ -859,6 +867,14 @@ html.dark .live-text-region:hover {
 html.dark .live-text-region.has-selection {
   background-color: rgba(138, 180, 248, 0.14);
   box-shadow: 0 0 0 2px #8ab4f8;
+}
+.live-text-region.is-low-conf.has-selection {
+  background-color: rgba(249, 171, 0, 0.18);
+  box-shadow: 0 0 0 2px #f9ab00;
+}
+html.dark .live-text-region.is-low-conf.has-selection {
+  background-color: rgba(251, 188, 4, 0.22);
+  box-shadow: 0 0 0 2px #fbbc04;
 }
 .live-text-span::selection {
   background-color: rgba(26, 115, 232, 0.22);
@@ -914,6 +930,18 @@ html.dark .md-live-sel-header {
 }
 html.dark .md-live-sel-badge {
   color: #8ab4f8;
+}
+.md-live-sel-badge.is-low-conf {
+  color: #b06000;
+  background-color: #fef7e0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(249, 171, 0, 0.45);
+}
+html.dark .md-live-sel-badge.is-low-conf {
+  color: #fdd663;
+  background-color: rgba(251, 188, 4, 0.16);
+  border-color: rgba(253, 214, 99, 0.4);
 }
 .md-live-sel-subbtn {
   padding: 3px 7px;
@@ -1120,7 +1148,8 @@ body.is-reader-fullscreen header.md-app-bar,
 body.is-reader-fullscreen #viewerTopToolbar,
 body.is-reader-fullscreen #drawModeBanner,
 body.is-reader-fullscreen #liveTextBanner,
-body.is-reader-fullscreen #readerScrubberBar {
+body.is-reader-fullscreen #readerScrubberBar,
+body.is-reader-fullscreen #dropZoneRoot > section:not(#viewerSection) {
   display: none !important;
 }
 body.is-reader-fullscreen #viewerSection {
@@ -1128,7 +1157,9 @@ body.is-reader-fullscreen #viewerSection {
   inset: 0 !important;
   width: 100vw !important;
   height: 100vh !important;
+  height: 100dvh !important;
   max-height: 100vh !important;
+  max-height: 100dvh !important;
   z-index: 60 !important;
   border: 0 !important;
 }

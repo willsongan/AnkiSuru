@@ -231,6 +231,16 @@ function renderPageList() {
       }
     });
 
+    card.addEventListener('dblclick', (ev) => {
+      if (ev.target.closest('button')) return;
+      ev.preventDefault();
+      const targetIdx = state.pages.findIndex((p) => p.id === page.id);
+      if (targetIdx >= 0 && state.selectedPageId !== page.id) {
+        goToPageIndex(targetIdx, { animateSlide: false, scrollSidebar: false });
+      }
+      quickExtractSinglePage(page);
+    });
+
     el.pageListContainer.appendChild(card);
   });
 }
@@ -601,10 +611,17 @@ function renderOverlayBoxes() {
       if (!txt) return;
       const reg = document.createElement('div');
       const isPopupOpen = state.livePopupBlockId === blk.id;
-      reg.className = 'live-text-region' + (isPopupOpen ? ' has-selection' : '');
+      const needsReview = isBlockBelowReviewThreshold(blk, page);
+      const confPct = typeof blk.charConf === 'number' ? Math.round(blk.charConf * 100) : null;
+      reg.className =
+        'live-text-region' +
+        (needsReview ? ' is-low-conf' : '') +
+        (isPopupOpen ? ' has-selection' : '');
       reg.setAttribute('data-live-text', '1');
       reg.setAttribute('data-bbox-id', blk.id);
-      reg.title = 'Click to open selectable sentence popup (Bubble #' + (idx + 1) + ')';
+      reg.title = needsReview
+        ? ('⚠ Low OCR (' + (confPct !== null ? confPct + '%' : '<90%') + ' — may be inaccurate) · Click to inspect Bubble #' + (idx + 1))
+        : ('Click to open selectable sentence popup (Bubble #' + (idx + 1) + ')');
       applyBoxGeometryToDom(reg, blk, page);
 
       reg.addEventListener('click', (ev) => {

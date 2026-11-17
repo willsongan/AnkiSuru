@@ -415,7 +415,7 @@
             <div class="viewer-divider"></div>
 
             <!-- Distraction-Free Fullscreen Manga Reader (Shortcut: F) -->
-            <button id="btnToggleFullscreen" type="button" class="viewer-icon-btn tip-right" data-tip="Fullscreen Reader (F)" aria-label="Fullscreen manga reader">
+            <button id="btnToggleFullscreen" type="button" aria-pressed="false" class="viewer-icon-btn tip-right" data-tip="Website Fullscreen (F)" aria-label="Website fullscreen manga reader">
               <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
               </svg>
@@ -463,7 +463,7 @@
 
           <div class="md-fs-divider"></div>
 
-          <button id="btnExitFullscreen" type="button" class="md-fs-icon-btn" title="Exit Fullscreen (Esc or F)" aria-label="Exit fullscreen">
+          <button id="btnExitFullscreen" type="button" class="md-fs-icon-btn" title="Exit Website Fullscreen (Esc or F)" aria-label="Exit website fullscreen">
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>
             </svg>
@@ -545,7 +545,7 @@
       <div id="readerScrubberBar" class="px-3 py-1.5 border-t border-slate-200 bg-white flex items-center gap-2.5 text-xs shrink-0">
         <span id="scrubberPageCounter" class="font-medium text-slate-700 tabular-nums shrink-0 min-w-[60px]">0 / 0</span>
         <input id="pageScrubberRange" type="range" min="1" max="1" value="1" step="1" disabled class="md-slider flex-1 h-1 bg-slate-200 rounded cursor-pointer disabled:opacity-40" title="Slide to jump directly to any manga page" />
-        <span class="hidden xl:inline text-[11px] text-slate-500 shrink-0">Click side margin or swipe to turn pages</span>
+        <span class="hidden xl:inline text-[11px] text-slate-500 shrink-0">Double-click page to extract · Click side margin or swipe to turn pages</span>
       </div>
     </section>
 

@@ -194,7 +194,7 @@ def _load_repo_vocab_list(repo_id: str) -> list[str]:
       try:
         tpath = Path(hf_hub_download(repo_id=repo_id, filename="tokenizer.json", local_files_only=local_only))
         tdata = json.loads(tpath.read_text(encoding="utf-8"))
-        vocab_dict = (tdata.getmodel() if hasattr(tdata, "getmodel") else (tdata.get("model") or {})).get("vocab") or {}
+        vocab_dict = (tdata.get("model") or {}).get("vocab") or {}
         if isinstance(vocab_dict, dict) and len(vocab_dict) > 1000:
           max_id = max(int(v) for v in vocab_dict.values())
           arr = [""] * (max_id + 1)

@@ -643,7 +643,7 @@ el.btnExtractAll.addEventListener('click', () => {
 });
 el.btnExtractPage.addEventListener('click', () => {
   const p = getSelectedPage();
-  if (p) extractPagesQueue([p]);
+  if (p) quickExtractSinglePage(p);
 });
 el.btnStopExtract.addEventListener('click', () => {
   triggerImmediateStop();
@@ -1036,10 +1036,22 @@ function syncLiveSelectionUI() {
   if (el.btnCopySelectedLiveText) {
     el.btnCopySelectedLiveText.disabled = false;
   }
+  const needsReview = isBlockBelowReviewThreshold(info.blk, info.page);
+  const confPct = typeof info.blk.charConf === 'number' ? Math.round(info.blk.charConf * 100) : null;
   if (el.liveSelMetaLabel) {
-    el.liveSelMetaLabel.textContent = sub
-      ? ('Selected · ' + subChars + ' / ' + totalChars + ' chars')
-      : ('Bubble #' + info.index + ' · ' + totalChars + ' chars');
+    el.liveSelMetaLabel.classList.toggle('is-low-conf', Boolean(needsReview));
+    if (needsReview) {
+      const confTag = confPct !== null ? (confPct + '% OCR') : 'Low OCR';
+      el.liveSelMetaLabel.textContent = sub
+        ? ('⚠ ' + confTag + ' · ' + subChars + '/' + totalChars + ' chars')
+        : ('⚠ ' + confTag + ' · May be inaccurate');
+      el.liveSelMetaLabel.title = 'OCR confidence is below 90% — double-check characters against the manga artwork';
+    } else {
+      el.liveSelMetaLabel.textContent = sub
+        ? ('Selected · ' + subChars + ' / ' + totalChars + ' chars')
+        : ('Bubble #' + info.index + ' · ' + totalChars + ' chars');
+      el.liveSelMetaLabel.title = '';
+    }
   }
   if (el.liveSelectionCopyChip) {
     const spanEl = el.liveSelectionCopyChip.querySelector('span');
@@ -1104,15 +1116,38 @@ function syncLiveSelectionUI() {
 document.addEventListener('selectionchange', syncLiveSelectionUI);
 
 if (el.liveSelectionCard) {
-  // Stop stage/viewport slide handlers from intercepting mouse drags inside the popup,
-  // while allowing default browser text selection inside #liveSelPreviewBody!
+  // Stop stage/viewport slide & double-click handlers from intercepting interactions inside the popup,
+  // while allowing native double-click word selection inside #liveSelPreviewBody!
   el.liveSelectionCard.addEventListener('pointerdown', (ev) => {
     ev.stopPropagation();
   });
   el.liveSelectionCard.addEventListener('click', (ev) => {
     ev.stopPropagation();
   });
+  el.liveSelectionCard.addEventListener('dblclick', (ev) => {
+    ev.stopPropagation();
+  });
 }
+
+// Double-click anywhere on the manga page to auto-start fast single-page extraction
+el.stageImageWrapper.addEventListener('dblclick', (ev) => {
+  if (state.drawMode) return;
+  if (ev.target.closest('#liveSelectionCard, .bbox-quickbar, [data-resize-dir], button, input, textarea, select, a')) {
+    return;
+  }
+  const page = getSelectedPage();
+  if (!page) return;
+  // In Select Text mode, let clicks on already-extracted bubble hotspots open the sentence popup without re-running OCR
+  if (state.liveTextMode && ev.target.closest('[data-live-text]')) {
+    return;
+  }
+  ev.preventDefault();
+  ev.stopPropagation();
+  if (window.getSelection) {
+    try { window.getSelection().removeAllRanges(); } catch (_e) {}
+  }
+  quickExtractSinglePage(page);
+});
 
 if (el.btnCopySelectedLiveText) {
   el.btnCopySelectedLiveText.addEventListener('pointerdown', (ev) => {
@@ -1279,6 +1314,7 @@ function setViewerFullscreen(enabled) {
   if (next === state.isViewerFullscreen) return;
   state.isViewerFullscreen = next;
 
+  // Website-only viewport fullscreen (expands viewer across 100% of the browser tab without triggering OS browser fullscreen)
   if (next) {
     if (state.drawMode) setDrawMode(false);
     setSettingsOpen(false);
@@ -1291,11 +1327,6 @@ function setViewerFullscreen(enabled) {
       el.fsFloatingHud.classList.remove('hidden');
       wakeFullscreenHud();
     }
-    try {
-      if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(() => {});
-      }
-    } catch (_e) {}
   } else {
     if (fsHudIdleTimer) {
       clearTimeout(fsHudIdleTimer);
@@ -1309,11 +1340,10 @@ function setViewerFullscreen(enabled) {
     if (!state.liveTextMode) {
       state.showBoxes = Boolean(state.preFsShowBoxes);
     }
-    try {
-      if (document.fullscreenElement && document.exitFullscreen) {
-        document.exitFullscreen().catch(() => {});
-      }
-    } catch (_e) {}
+  }
+  if (el.btnToggleFullscreen) {
+    el.btnToggleFullscreen.classList.toggle('is-active', next);
+    el.btnToggleFullscreen.setAttribute('aria-pressed', next ? 'true' : 'false');
   }
 
   applyStageZoom(getSelectedPage());
@@ -1363,11 +1393,6 @@ if (el.viewerSection) {
   el.viewerSection.addEventListener('pointermove', wakeFullscreenHud, { passive: true });
   el.viewerSection.addEventListener('pointerdown', wakeFullscreenHud, { passive: true });
 }
-document.addEventListener('fullscreenchange', () => {
-  if (!document.fullscreenElement && state.isViewerFullscreen) {
-    setViewerFullscreen(false);
-  }
-});
 
 // Right Panel Tabs & Export Actions
 el.tabBtnAllText.addEventListener('click', () => setActiveTab('all'));
