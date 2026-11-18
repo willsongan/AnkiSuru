@@ -523,6 +523,13 @@ function goToPageIndex(targetIdx, opts) {
     resetStageSlideTransform();
   }
   preloadNeighborPages(targetIdx);
+  if (state.batchSelectMode && !isPageAlreadyExtracted(targetPage) && !state.isSampleSet && !state.isExtracting) {
+    setTimeout(() => {
+      if (state.selectedPageId === targetPage.id && state.batchSelectMode && !isPageAlreadyExtracted(targetPage) && !state.isExtracting) {
+        quickExtractSinglePage(targetPage);
+      }
+    }, 60);
+  }
   return true;
 }
 
@@ -582,7 +589,26 @@ function renderActivePageStage() {
 
 function syncBoxesToggleUI() {
   const liveOn = Boolean(state.liveTextMode);
-  const boxesVis = Boolean(state.showBoxes) && !liveOn;
+  const batchOn = Boolean(state.batchSelectMode);
+  const boxesVis = Boolean(state.showBoxes) && !liveOn && !batchOn;
+  const qLen = Array.isArray(state.batchQueue) ? state.batchQueue.length : 0;
+  if (el.btnBatchSelectMode) {
+    el.btnBatchSelectMode.classList.toggle('is-active', batchOn);
+    el.btnBatchSelectMode.setAttribute('aria-pressed', batchOn ? 'true' : 'false');
+  }
+  if (el.batchSelectBtnLabel) {
+    el.batchSelectBtnLabel.textContent = qLen > 0 ? ('Batch (' + qLen + ')') : 'Batch Select';
+  }
+  if (el.btnFsBatchSelect) {
+    el.btnFsBatchSelect.classList.toggle('is-active', batchOn || qLen > 0);
+    el.btnFsBatchSelect.setAttribute('aria-pressed', batchOn ? 'true' : 'false');
+  }
+  if (el.fsBatchBtnLabel) {
+    el.fsBatchBtnLabel.textContent = qLen > 0 ? ('Batch (' + qLen + ')') : 'Batch';
+  }
+  if (el.batchSelectBanner) {
+    el.batchSelectBanner.classList.toggle('hidden', !batchOn);
+  }
   if (el.btnToggleBoxes) {
     el.btnToggleBoxes.classList.toggle('is-active', boxesVis);
     if (el.iconBoxesOn) el.iconBoxesOn.classList.toggle('hidden', !boxesVis);
@@ -828,6 +854,54 @@ function renderOverlayBoxes() {
   const page = getSelectedPage();
   if (!page || !page.width || !page.height) return;
 
+  // Ordered Cross-Page Batch Bubble Selection Mode: click speech bubbles in sequence (1 -> 2 -> 3...) across pages!
+  if (state.batchSelectMode) {
+    if (state.isSampleSet && typeof populateSampleGroundTruthForPage === 'function') {
+      const hasTxt = (page.blocks || []).some((b) => Boolean((b.text || '').trim()));
+      if (!hasTxt && populateSampleGroundTruthForPage(page)) {
+        updatePageCardInPlace(page);
+      }
+    }
+    (page.blocks || []).forEach((blk, idx) => {
+      const txt = (blk.text || '').trim();
+      const qIdx = getBlockBatchOrderIndex(blk.id);
+      const isQueued = qIdx >= 0;
+      const reg = document.createElement('div');
+      reg.className = 'batch-select-region' + (isQueued ? ' is-queued' : '');
+      reg.setAttribute('data-batch-region', '1');
+      reg.setAttribute('data-bbox-id', blk.id);
+      reg.title = isQueued
+        ? ('Batch #' + (qIdx + 1) + ' — click to remove from batch (' + txt + ')')
+        : (txt
+            ? ('Click to add as Batch #' + (state.batchQueue.length + 1) + ' (' + txt + ')')
+            : ('Bubble #' + (idx + 1) + ' — click to OCR & add as Batch #' + (state.batchQueue.length + 1)));
+      applyBoxGeometryToDom(reg, blk, page);
+
+      if (isQueued) {
+        const ordBadge = document.createElement('span');
+        ordBadge.className = 'batch-order-badge';
+        ordBadge.textContent = String(qIdx + 1);
+        reg.appendChild(ordBadge);
+      }
+
+      reg.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        if (!(blk.text || '').trim()) {
+          if (state.isExtracting) return;
+          await ocrSingleBlockById(page, blk.id);
+          if ((blk.text || '').trim()) {
+            toggleBlockInBatchQueue(page.id, blk.id);
+          }
+          return;
+        }
+        toggleBlockInBatchQueue(page.id, blk.id);
+      });
+
+      el.bboxOverlayLayer.appendChild(reg);
+    });
+    return;
+  }
+
   // Select Text Popup Mode: hide boundary boxes and turn speech bubbles into clean click targets
   // that open a crisp, normal-selectable sentence popup right next to the bubble!
   if (state.liveTextMode) {
@@ -855,9 +929,21 @@ function renderOverlayBoxes() {
         : ('Click to open selectable sentence popup (Bubble #' + (idx + 1) + ')');
       applyBoxGeometryToDom(reg, blk, page);
 
+      const qIdxLive = getBlockBatchOrderIndex(blk.id);
+      if (qIdxLive >= 0) {
+        const ordBadge = document.createElement('span');
+        ordBadge.className = 'batch-order-badge';
+        ordBadge.textContent = String(qIdxLive + 1);
+        reg.appendChild(ordBadge);
+      }
+
       reg.addEventListener('click', (ev) => {
         ev.stopPropagation();
         if (!state.liveTextMode || !txt) return;
+        if (ev.shiftKey) {
+          toggleBlockInBatchQueue(page.id, blk.id);
+          return;
+        }
         if (typeof openLiveBubblePopup === 'function') {
           openLiveBubblePopup(blk.id);
         }
@@ -896,6 +982,14 @@ function renderOverlayBoxes() {
     badge.className = 'bbox-badge';
     badge.textContent = needsReview ? (idx + 1) + '!' : String(idx + 1);
     div.appendChild(badge);
+
+    const qIdxBox = getBlockBatchOrderIndex(blk.id);
+    if (qIdxBox >= 0) {
+      const bBadge = document.createElement('span');
+      bBadge.className = 'batch-order-badge';
+      bBadge.textContent = String(qIdxBox + 1);
+      div.appendChild(bBadge);
+    }
 
     // 8 Resize Handles
     RESIZE_DIRS.forEach((dir) => {
@@ -1847,6 +1941,404 @@ function syncSavedVocabIndicatorsInPlace() {
   });
 }
 
+
+function renderBatchStudyDock() {
+  if (!el.batchStudyDock) return;
+  const entries = resolveBatchQueueEntries();
+  const qCount = entries.length;
+  const pageCount = new Set(entries.map((e) => e.page.id)).size;
+  const showDock = Boolean(state.batchSelectMode || qCount > 0 || state.batchStudyResult);
+
+  el.batchStudyDock.classList.toggle('hidden', !showDock);
+  if (!showDock) return;
+
+  if (el.batchDockCountBadge) {
+    el.batchDockCountBadge.textContent = qCount > 0
+      ? ('Batch · ' + qCount + (qCount === 1 ? ' bubble' : ' bubbles') + (pageCount > 1 ? ' · ' + pageCount + ' pages' : ''))
+      : 'Batch Select · 0';
+  }
+  if (el.batchDockHintText) {
+    el.batchDockHintText.textContent = qCount === 0
+      ? 'Click speech bubbles in reading order (1 → 2 → 3…) across pages'
+      : 'Ordered context ready — click EN + Romaji + Vocab & Grammar';
+  }
+  if (el.batchBannerStatusText && state.batchSelectMode) {
+    el.batchBannerStatusText.innerHTML = qCount > 0
+      ? ('<strong>Batch Order (' + qCount + ' selected across ' + pageCount + (pageCount === 1 ? ' page' : ' pages') + '):</strong> Click more bubbles across pages or run <strong>EN + Romaji + Vocab &amp; Grammar</strong> below.')
+      : '<strong>Batch Order Mode:</strong> Click speech bubbles in reading order (1 → 2 → 3…) across one or more pages, then click <strong>EN + Romaji + Vocab &amp; Grammar</strong> below.';
+  }
+
+  if (el.btnRunBatchStudy) {
+    el.btnRunBatchStudy.disabled = qCount === 0 || state.isRunningBatchStudy;
+    el.btnRunBatchStudy.textContent = state.isRunningBatchStudy
+      ? ('Analyzing ' + qCount + ' in Order…')
+      : ('EN + Romaji + Vocab & Grammar' + (qCount > 0 ? ' (' + qCount + ')' : ''));
+  }
+
+  const hasResult = Boolean(state.batchStudyResult && Array.isArray(state.batchStudyResult.steps) && state.batchStudyResult.steps.length > 0);
+  if (el.btnToggleBatchResults) {
+    el.btnToggleBatchResults.classList.toggle('hidden', !hasResult && !state.isRunningBatchStudy);
+    el.btnToggleBatchResults.textContent = state.batchStudyExpanded ? 'Hide Study' : 'Show Study';
+  }
+  if (el.btnBatchUndoLast) {
+    el.btnBatchUndoLast.disabled = qCount === 0 || state.isRunningBatchStudy;
+  }
+  if (el.btnClearBatchQueue) {
+    el.btnClearBatchQueue.disabled = (qCount === 0 && !hasResult) || state.isRunningBatchStudy;
+  }
+
+  // Render Ordered Bubble Sequence Strip
+  if (el.batchSequenceStrip) {
+    el.batchSequenceStrip.innerHTML = '';
+    if (qCount === 0) {
+      const emptyHint = document.createElement('span');
+      emptyHint.className = 'text-xs text-slate-500 py-0.5';
+      emptyHint.textContent = 'No bubbles queued yet — click bubbles on this page, turn pages, and keep clicking in reading order.';
+      el.batchSequenceStrip.appendChild(emptyHint);
+    } else {
+      entries.forEach((ent, idx) => {
+        if (idx > 0) {
+          const arrow = document.createElement('span');
+          arrow.className = 'text-xs text-slate-400 select-none shrink-0';
+          arrow.textContent = '→';
+          el.batchSequenceStrip.appendChild(arrow);
+        }
+        const chip = document.createElement('div');
+        chip.className = 'md-batch-seq-chip';
+        chip.setAttribute('data-batch-chip-step', String(ent.step));
+        chip.title = 'Page ' + (ent.pageIdx + 1) + ' #' + ent.bubbleNum + ': ' + ent.text + ' (click to jump)';
+
+        const num = document.createElement('span');
+        num.className = 'md-batch-seq-num';
+        num.textContent = String(ent.step);
+
+        const loc = document.createElement('span');
+        loc.className = 'text-[10px] font-semibold text-slate-500';
+        loc.textContent = 'P' + (ent.pageIdx + 1) + '#' + ent.bubbleNum;
+
+        const snippet = document.createElement('span');
+        snippet.className = 'jp-text font-medium';
+        const shortTxt = Array.from(ent.text).length > 12
+          ? Array.from(ent.text).slice(0, 12).join('') + '…'
+          : ent.text;
+        snippet.textContent = shortTxt;
+
+        const rmBtn = document.createElement('button');
+        rmBtn.type = 'button';
+        rmBtn.className = 'md-batch-seq-remove';
+        rmBtn.textContent = '×';
+        rmBtn.title = 'Remove Step #' + ent.step + ' from batch';
+        rmBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          removeBatchStepAt(idx);
+        });
+
+        chip.addEventListener('click', () => {
+          if (typeof focusBlockOnStage === 'function') {
+            focusBlockOnStage(ent.pageIdx, ent.blk.id, { skipRightRender: false });
+          } else {
+            goToPageIndex(ent.pageIdx, { animateSlide: true });
+          }
+        });
+
+        chip.appendChild(num);
+        chip.appendChild(loc);
+        chip.appendChild(snippet);
+        chip.appendChild(rmBtn);
+        el.batchSequenceStrip.appendChild(chip);
+      });
+    }
+  }
+
+  // Render Expandable Batch Study Results Panel
+  if (el.batchStudyResultsPanel) {
+    const showResults = Boolean(state.batchStudyExpanded && (state.isRunningBatchStudy || hasResult));
+    el.batchStudyResultsPanel.classList.toggle('hidden', !showResults);
+    if (!showResults) return;
+
+    const prevScroll = el.batchStudyResultsPanel.scrollTop;
+    el.batchStudyResultsPanel.innerHTML = '';
+
+    if (state.isRunningBatchStudy) {
+      const loadingBox = document.createElement('div');
+      loadingBox.className = 'rounded-lg border border-indigo-200 bg-indigo-50/50 p-3 text-xs text-slate-700';
+      loadingBox.textContent = 'Translating ' + qCount + ' ordered bubble(s) together with verified Romaji, vocabulary & grammar…';
+      el.batchStudyResultsPanel.appendChild(loadingBox);
+      return;
+    }
+
+    const res = state.batchStudyResult;
+    if (!res) return;
+
+    // Collect all vocab across all steps for 1-click "+ Save All Batch Vocab"
+    const allBatchVocabPairs = [];
+    (res.steps || []).forEach((st) => {
+      (st.vocab || []).forEach((v) => {
+        if (getVocabPrimaryKanji(v)) {
+          allBatchVocabPairs.push({
+            v,
+            meta: {
+              contextJp: st.jpText,
+              pageId: st.pageId,
+              pageName: st.pageName,
+              bubbleIndex: st.bubbleNum,
+              blockId: st.blockId
+            }
+          });
+        }
+      });
+    });
+
+    // 1. Connected Dialogue Flow Summary Card
+    const summaryCard = document.createElement('div');
+    summaryCard.setAttribute('data-batch-connected-card', '1');
+    summaryCard.className = 'rounded-lg border border-indigo-200 bg-indigo-50/55 p-3 space-y-1.5 text-xs';
+
+    const sumHead = document.createElement('div');
+    sumHead.className = 'flex flex-wrap items-center justify-between gap-2';
+    const sumTitle = document.createElement('span');
+    sumTitle.className = 'text-[11px] font-bold uppercase tracking-wider text-indigo-900';
+    sumTitle.textContent = 'Connected Sequence (' + res.steps.length + ' Bubbles in Order)';
+    sumHead.appendChild(sumTitle);
+
+    const sumBtns = document.createElement('div');
+    sumBtns.className = 'flex items-center gap-1.5';
+    if (res.connectedRomaji) {
+      const btnCpRom = document.createElement('button');
+      btnCpRom.type = 'button';
+      btnCpRom.className = 'md-copy-romaji-btn';
+      btnCpRom.textContent = 'Copy Romaji';
+      btnCpRom.addEventListener('click', () => copyTextSafe(res.connectedRomaji, 'Copied connected Romaji!'));
+      sumBtns.appendChild(btnCpRom);
+    }
+    if (res.connectedEnglish) {
+      const btnCpEn = document.createElement('button');
+      btnCpEn.type = 'button';
+      btnCpEn.className = 'md-copy-romaji-btn';
+      btnCpEn.textContent = 'Copy EN';
+      btnCpEn.addEventListener('click', () => copyTextSafe(res.connectedEnglish, 'Copied connected English!'));
+      sumBtns.appendChild(btnCpEn);
+    }
+    if (allBatchVocabPairs.length > 0) {
+      const allKeys = allBatchVocabPairs.map((p) => normalizeVocabMatchKey(p.v)).filter(Boolean).join('|');
+      const allSaved = allBatchVocabPairs.every((p) => isVocabItemSaved(p.v));
+      const btnSaveAllBatch = document.createElement('button');
+      btnSaveAllBatch.type = 'button';
+      btnSaveAllBatch.setAttribute('data-vocab-save-all-keys', allKeys);
+      btnSaveAllBatch.className = 'md-vocab-save-btn' + (allSaved ? ' is-saved' : '');
+      btnSaveAllBatch.textContent = allSaved
+        ? '✓ All Saved'
+        : ('+ Save All Vocab (' + allBatchVocabPairs.length + ')');
+      btnSaveAllBatch.addEventListener('click', () => {
+        let added = 0;
+        allBatchVocabPairs.forEach((pair) => {
+          if (!isVocabItemSaved(pair.v)) {
+            state.savedVocab.push(buildSavedVocabRecord(pair.v, pair.meta));
+            added++;
+          }
+        });
+        if (added > 0) {
+          persistSavedVocabState();
+          notifySavedVocabChanged();
+          showToast('Saved ' + added + ' vocabulary word(s) from batch!');
+        } else {
+          showToast('All batch vocabulary words are already saved!');
+        }
+      });
+      sumBtns.appendChild(btnSaveAllBatch);
+    }
+    sumHead.appendChild(sumBtns);
+    summaryCard.appendChild(sumHead);
+
+    if (res.connectedRomaji) {
+      const cRom = document.createElement('div');
+      cRom.setAttribute('data-batch-connected-romaji', '1');
+      cRom.className = 'italic font-medium text-indigo-800 leading-snug';
+      cRom.textContent = res.connectedRomaji;
+      summaryCard.appendChild(cRom);
+    }
+    if (res.connectedEnglish) {
+      const cEn = document.createElement('div');
+      cEn.setAttribute('data-batch-connected-english', '1');
+      cEn.className = 'font-semibold text-slate-900 text-[13px] leading-snug';
+      cEn.textContent = res.connectedEnglish;
+      summaryCard.appendChild(cEn);
+    }
+    if (res.contextNote) {
+      const cNote = document.createElement('p');
+      cNote.className = 'text-[11px] text-slate-600 pt-1 border-t border-indigo-200/60 leading-snug';
+      cNote.textContent = 'Context Flow: ' + res.contextNote;
+      summaryCard.appendChild(cNote);
+    }
+    el.batchStudyResultsPanel.appendChild(summaryCard);
+
+    // 2. Per-Step Breakdown Cards
+    res.steps.forEach((st) => {
+      const stMeta = {
+        contextJp: st.jpText,
+        pageId: st.pageId,
+        pageName: st.pageName,
+        bubbleIndex: st.bubbleNum,
+        blockId: st.blockId
+      };
+      const stCard = document.createElement('div');
+      stCard.setAttribute('data-batch-step-card', String(st.step));
+      stCard.className = 'rounded-lg border border-slate-200 bg-white p-2.5 space-y-2 text-xs';
+
+      const stHead = document.createElement('div');
+      stHead.className = 'flex flex-wrap items-center justify-between gap-2 pb-1 border-b border-slate-100';
+      const stLeft = document.createElement('div');
+      stLeft.className = 'flex items-center gap-1.5 min-w-0';
+      const stBadge = document.createElement('span');
+      stBadge.className = 'md-batch-seq-num';
+      stBadge.textContent = String(st.step);
+      const stLoc = document.createElement('button');
+      stLoc.type = 'button';
+      stLoc.className = 'text-[11px] font-semibold text-indigo-700 hover:underline';
+      stLoc.textContent = 'Page ' + (st.pageIdx + 1) + ' · Bubble #' + st.bubbleNum;
+      stLoc.addEventListener('click', () => {
+        if (typeof focusBlockOnStage === 'function') {
+          focusBlockOnStage(st.pageIdx, st.blockId, { skipRightRender: false });
+        }
+      });
+      const stJp = document.createElement('span');
+      stJp.className = 'jp-text font-bold text-slate-900 truncate';
+      stJp.textContent = '「' + st.jpText + '」';
+
+      stLeft.appendChild(stBadge);
+      stLeft.appendChild(stLoc);
+      stLeft.appendChild(stJp);
+      stHead.appendChild(stLeft);
+      stCard.appendChild(stHead);
+
+      if (st.romaji) {
+        const rLine = document.createElement('div');
+        rLine.className = 'flex items-baseline gap-1.5';
+        const rLbl = document.createElement('span');
+        rLbl.className = 'text-[10px] font-bold uppercase tracking-wider text-indigo-700 shrink-0';
+        rLbl.textContent = 'Romaji';
+        const rVal = document.createElement('span');
+        rVal.className = 'italic font-medium text-slate-800';
+        rVal.textContent = st.romaji;
+        rLine.appendChild(rLbl);
+        rLine.appendChild(rVal);
+        stCard.appendChild(rLine);
+      }
+
+      if (st.english) {
+        const eLine = document.createElement('div');
+        eLine.className = 'flex items-baseline gap-1.5';
+        const eLbl = document.createElement('span');
+        eLbl.className = 'text-[10px] font-bold uppercase tracking-wider text-emerald-700 shrink-0';
+        eLbl.textContent = 'English';
+        const eVal = document.createElement('span');
+        eVal.className = 'font-medium text-slate-900';
+        eVal.textContent = st.english;
+        eLine.appendChild(eLbl);
+        eLine.appendChild(eVal);
+        stCard.appendChild(eLine);
+      }
+
+      if (st.nuance) {
+        const nLine = document.createElement('p');
+        nLine.className = 'text-[11px] text-slate-500';
+        nLine.textContent = 'Tone / Continuity: ' + st.nuance;
+        stCard.appendChild(nLine);
+      }
+
+      if (Array.isArray(st.vocab) && st.vocab.length > 0) {
+        const vWrap = document.createElement('div');
+        vWrap.className = 'space-y-1 pt-1 border-t border-slate-100';
+        st.vocab.forEach((v) => {
+          const vRow = document.createElement('div');
+          vRow.className = 'rounded border border-slate-200 bg-slate-50/50 px-2 py-1 flex flex-col gap-0.5';
+          const top = document.createElement('div');
+          top.className = 'flex flex-wrap items-center justify-between gap-1';
+          const wLeft = document.createElement('div');
+          wLeft.className = 'flex flex-wrap items-baseline gap-1.5';
+          const sf = document.createElement('span');
+          sf.className = 'jp-text font-bold text-slate-900';
+          sf.textContent = v.surface || '';
+          wLeft.appendChild(sf);
+          if (v.reading && v.reading !== v.surface) {
+            const rd = document.createElement('span');
+            rd.className = 'jp-text text-[11px] text-indigo-700 font-medium';
+            rd.textContent = '【' + v.reading + '】';
+            wLeft.appendChild(rd);
+          }
+          if (v.romaji) {
+            const rm = document.createElement('span');
+            rm.className = 'italic text-[11px] text-slate-500';
+            rm.textContent = v.romaji;
+            wLeft.appendChild(rm);
+          }
+          top.appendChild(wLeft);
+
+          const wRight = document.createElement('div');
+          wRight.className = 'flex items-center gap-1 ml-auto shrink-0';
+          if (v.pos) {
+            const pos = document.createElement('span');
+            pos.className = 'px-1.5 py-0.2 rounded bg-emerald-100/80 text-emerald-900 text-[10px] font-semibold';
+            pos.textContent = v.pos;
+            wRight.appendChild(pos);
+          }
+          const vKey = normalizeVocabMatchKey(v);
+          const saved = isVocabItemSaved(v);
+          const btnSave = document.createElement('button');
+          btnSave.type = 'button';
+          btnSave.setAttribute('data-vocab-save-btn', '1');
+          btnSave.setAttribute('data-vocab-save-key', vKey);
+          btnSave.className = 'md-vocab-save-btn' + (saved ? ' is-saved' : '');
+          btnSave.textContent = saved ? '✓ Saved' : '+ Save';
+          btnSave.addEventListener('click', () => toggleSaveVocabItem(v, stMeta));
+          wRight.appendChild(btnSave);
+          top.appendChild(wRight);
+
+          const mn = document.createElement('p');
+          mn.className = 'text-[11px] text-slate-700 leading-snug';
+          mn.textContent = v.meaning || '';
+          vRow.appendChild(top);
+          vRow.appendChild(mn);
+          vWrap.appendChild(vRow);
+        });
+        stCard.appendChild(vWrap);
+      }
+
+      if (Array.isArray(st.grammar) && st.grammar.length > 0) {
+        const gWrap = document.createElement('div');
+        gWrap.className = 'space-y-1 pt-1 border-t border-slate-100';
+        st.grammar.forEach((g) => {
+          const gRow = document.createElement('div');
+          gRow.className = 'rounded border border-indigo-100 bg-indigo-50/35 px-2 py-1';
+          const gTop = document.createElement('div');
+          gTop.className = 'flex items-center justify-between gap-1';
+          const pat = document.createElement('span');
+          pat.className = 'jp-text font-bold text-indigo-900';
+          pat.textContent = g.pattern || '';
+          gTop.appendChild(pat);
+          if (g.level) {
+            const lvl = document.createElement('span');
+            lvl.className = 'text-[10px] font-semibold text-indigo-700';
+            lvl.textContent = g.level;
+            gTop.appendChild(lvl);
+          }
+          const exp = document.createElement('p');
+          exp.className = 'text-[11px] text-slate-700 leading-snug mt-0.5';
+          exp.textContent = g.explanation || '';
+          gRow.appendChild(gTop);
+          gRow.appendChild(exp);
+          gWrap.appendChild(gRow);
+        });
+        stCard.appendChild(gWrap);
+      }
+
+      el.batchStudyResultsPanel.appendChild(stCard);
+    });
+
+    el.batchStudyResultsPanel.scrollTop = prevScroll;
+  }
+}
+
 function renderSavedVocabPanel() {
   if (!el.panelSavedVocab) return;
   const prevScroll = el.panelSavedVocab.scrollTop;
@@ -2604,7 +3096,7 @@ function renderRightPanel() {
     'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-45 disabled:pointer-events-none transition shadow-sm';
   btnTranslatePageAll.textContent = state.gemini.isTranslatingPage
     ? 'Translating Page…'
-    : 'Translate Page to English (' + extractedCountOnPage + ')';
+    : 'Translate Page: EN + Romaji (' + extractedCountOnPage + ')';
   btnTranslatePageAll.title = 'Translate all extracted bubbles on this page into English in one Gemini request';
   btnTranslatePageAll.addEventListener('click', (ev) => {
     ev.stopPropagation();
@@ -2908,62 +3400,62 @@ function renderRightPanel() {
       renderRightPanel();
     });
 
-    const btnEnglish = document.createElement('button');
-    btnEnglish.type = 'button';
-    btnEnglish.disabled = !hasExtractedJp || Boolean(activeTask);
-    btnEnglish.setAttribute('data-bubble-english-btn', '1');
-    btnEnglish.className =
-      'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition disabled:opacity-40 disabled:pointer-events-none ' +
-      (hasTrans && study.showTranslation !== false
-        ? 'border-indigo-300 bg-indigo-100/80 text-indigo-900 hover:bg-indigo-200/70'
-        : 'border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50');
-    if (activeTask === 'translate') {
-      btnEnglish.textContent = 'Translating…';
-    } else if (hasTrans && !isStale) {
-      btnEnglish.textContent = study.showTranslation === false ? 'Show English' : 'Hide English';
-    } else {
-      btnEnglish.textContent = 'English';
-    }
-    btnEnglish.title = 'Translate this speech bubble into English via Gemini API';
-    btnEnglish.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      if (hasTrans && !isStale) {
-        blk.study.showTranslation = blk.study.showTranslation === false;
-        notifyStudyViewsUpdated(blk.id);
-      } else {
-        requestBubbleTranslation(page, blk, isStale);
-      }
-    });
-
+    const isCombinedOpen = Boolean(hasBreakdown && !isStale && study.showBreakdown);
     const btnBreakdown = document.createElement('button');
     btnBreakdown.type = 'button';
     btnBreakdown.disabled = !hasExtractedJp || Boolean(activeTask);
+    btnBreakdown.setAttribute('data-bubble-study-btn', '1');
+    btnBreakdown.setAttribute('aria-pressed', isCombinedOpen ? 'true' : 'false');
     btnBreakdown.className =
       'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition disabled:opacity-40 disabled:pointer-events-none ' +
-      (hasBreakdown && study.showBreakdown
+      (isCombinedOpen
         ? 'border-emerald-300 bg-emerald-100/80 text-emerald-900 hover:bg-emerald-200/70'
         : 'border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50');
-    if (activeTask === 'breakdown') {
-      btnBreakdown.textContent = 'Breaking down…';
+    if (activeTask) {
+      btnBreakdown.textContent = 'Analyzing…';
     } else if (hasBreakdown && !isStale) {
-      btnBreakdown.textContent = study.showBreakdown ? 'Hide Vocab & Grammar' : 'Show Vocab & Grammar';
+      btnBreakdown.textContent = isCombinedOpen
+        ? 'Hide Study'
+        : 'Show Study';
     } else {
-      btnBreakdown.textContent = 'Vocab & Grammar';
+      btnBreakdown.textContent = 'EN + Romaji + Vocab & Grammar';
     }
-    btnBreakdown.title = 'Break down Japanese vocabulary, readings, conjugations, and grammar used in this bubble';
+    btnBreakdown.title = 'Translate into English + verified Romaji and break down Japanese vocabulary & grammar in one Gemini request';
     btnBreakdown.addEventListener('click', (ev) => {
       ev.stopPropagation();
       if (hasBreakdown && !isStale) {
-        blk.study.showBreakdown = !blk.study.showBreakdown;
+        const nextOpen = !isCombinedOpen;
+        blk.study.showTranslation = nextOpen;
+        blk.study.showBreakdown = nextOpen;
         notifyStudyViewsUpdated(blk.id);
       } else {
         requestBubbleBreakdown(page, blk, isStale);
       }
     });
 
+    const batchIdxOnCard = getBlockBatchOrderIndex(blk.id);
+    const isQueuedOnCard = batchIdxOnCard >= 0;
+    const btnBatchCard = document.createElement('button');
+    btnBatchCard.type = 'button';
+    btnBatchCard.disabled = !hasExtractedJp;
+    btnBatchCard.setAttribute('data-bubble-batch-btn', '1');
+    btnBatchCard.className =
+      'inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold border transition disabled:opacity-40 disabled:pointer-events-none ' +
+      (isQueuedOnCard
+        ? 'border-teal-400 bg-teal-100/80 text-teal-900 hover:bg-teal-200/70'
+        : 'border-slate-200 bg-white text-slate-700 hover:bg-teal-50');
+    btnBatchCard.textContent = isQueuedOnCard ? ('#' + (batchIdxOnCard + 1) + ' Batch') : '+ Batch';
+    btnBatchCard.title = isQueuedOnCard
+      ? ('Bubble is #' + (batchIdxOnCard + 1) + ' in your cross-page Batch Queue — click to remove')
+      : 'Add this bubble to your ordered cross-page Batch Study queue';
+    btnBatchCard.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      toggleBlockInBatchQueue(page.id, blk.id);
+    });
+
     leftStudyBtns.appendChild(btnInstantRomaji);
-    leftStudyBtns.appendChild(btnEnglish);
     leftStudyBtns.appendChild(btnBreakdown);
+    leftStudyBtns.appendChild(btnBatchCard);
 
     if (hasTrans || hasBreakdown) {
       const btnRefreshStudy = document.createElement('button');
@@ -2976,15 +3468,11 @@ function renderRightPanel() {
           : 'border-slate-200 bg-white text-slate-500 hover:text-indigo-700 hover:bg-slate-100');
       btnRefreshStudy.textContent = isStale ? '↻ Update' : '↻';
       btnRefreshStudy.title = isStale
-        ? 'Japanese text changed — click to re-run Gemini study analysis'
-        : 'Re-generate Gemini translation & breakdown';
+        ? 'Japanese text changed — click to re-run Gemini English + Vocab & Grammar'
+        : 'Re-generate English translation & vocabulary/grammar breakdown';
       btnRefreshStudy.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        if (hasBreakdown && study.showBreakdown) {
-          requestBubbleBreakdown(page, blk, true);
-        } else {
-          requestBubbleTranslation(page, blk, true);
-        }
+        requestBubbleBreakdown(page, blk, true);
       });
       leftStudyBtns.appendChild(btnRefreshStudy);
     }
@@ -3042,11 +3530,40 @@ function renderRightPanel() {
       card.appendChild(romBox);
     }
 
-    // Render English-Only Translation Box
+    // Render English + Verified Romaji Translation Box
     if (hasTrans && study.showTranslation !== false) {
       const transBox = document.createElement('div');
       transBox.setAttribute('data-bubble-english-box', '1');
       transBox.className = 'mt-2 rounded-lg border border-indigo-200/80 bg-white p-2.5 space-y-1.5 text-xs';
+
+      if (study.romaji && study.romaji.trim()) {
+        const aiRomRow = document.createElement('div');
+        aiRomRow.setAttribute('data-bubble-study-romaji', '1');
+        aiRomRow.className = 'flex items-start justify-between gap-2 pb-1.5 border-b border-slate-100';
+        const aiRomWrap = document.createElement('div');
+        aiRomWrap.className = 'min-w-0 flex-1';
+        const aiRomLbl = document.createElement('span');
+        aiRomLbl.className = 'inline-block text-[10px] font-bold uppercase tracking-wider text-indigo-700 mr-1.5';
+        aiRomLbl.textContent = 'Romaji (Check)';
+        const aiRomVal = document.createElement('span');
+        aiRomVal.className = 'italic font-medium text-slate-800 break-words';
+        aiRomVal.textContent = study.romaji.trim();
+        aiRomWrap.appendChild(aiRomLbl);
+        aiRomWrap.appendChild(aiRomVal);
+
+        const btnCopyAiRom = document.createElement('button');
+        btnCopyAiRom.type = 'button';
+        btnCopyAiRom.className = 'text-[10px] font-medium text-slate-400 hover:text-indigo-700 shrink-0';
+        btnCopyAiRom.textContent = 'Copy';
+        btnCopyAiRom.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          copyTextSafe(study.romaji.trim(), 'Copied verified Romaji!');
+        });
+
+        aiRomRow.appendChild(aiRomWrap);
+        aiRomRow.appendChild(btnCopyAiRom);
+        transBox.appendChild(aiRomRow);
+      }
 
       const enRow = document.createElement('div');
       enRow.className = 'flex items-start justify-between gap-2';

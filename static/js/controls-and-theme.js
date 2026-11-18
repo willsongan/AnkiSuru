@@ -5,6 +5,40 @@
 // -----------------------------------------------------------------------
 let dragStart = null;
 
+async function setBatchSelectMode(enabled) {
+  const next = Boolean(enabled);
+  if (next) {
+    if (state.drawMode) setDrawMode(false);
+    if (state.liveTextMode) {
+      state.liveTextMode = false;
+      state.livePopupBlockId = null;
+      if (el.liveSelectionCard) el.liveSelectionCard.classList.add('hidden');
+    }
+    state.batchSelectMode = true;
+    const page = getSelectedPage();
+    if (page && !isPageAlreadyExtracted(page)) {
+      if (state.isSampleSet && typeof populateSampleGroundTruthForPage === 'function') {
+        populateSampleGroundTruthForPage(page);
+        page.ocrCompleted = true;
+        updatePageCardInPlace(page);
+      } else if (!state.isExtracting) {
+        syncBoxesToggleUI();
+        renderOverlayBoxes();
+        renderBatchStudyDock();
+        showToast('Extracting Japanese text on this page for Batch Select…');
+        await extractPagesQueue([page]);
+        return;
+      }
+    }
+  } else {
+    state.batchSelectMode = false;
+  }
+  syncBoxesToggleUI();
+  renderOverlayBoxes();
+  renderRightPanel();
+  renderBatchStudyDock();
+}
+
 async function setLiveTextMode(enabled) {
   const next = Boolean(enabled);
   if (next && state.drawMode) {
@@ -15,6 +49,9 @@ async function setLiveTextMode(enabled) {
     el.btnDrawBoxMode.setAttribute('data-tip', 'Draw Box');
     el.rubberBandBox.classList.add('hidden');
     dragStart = null;
+  }
+  if (next && state.batchSelectMode) {
+    state.batchSelectMode = false;
   }
   state.liveTextMode = next;
   if (!next) state.livePopupBlockId = null;
@@ -51,6 +88,9 @@ async function setLiveTextMode(enabled) {
 function setDrawMode(enabled) {
   if (enabled && state.liveTextMode) {
     state.liveTextMode = false;
+  }
+  if (enabled && state.batchSelectMode) {
+    state.batchSelectMode = false;
   }
   state.drawMode = enabled;
   el.drawModeBanner.classList.toggle('hidden', !enabled);
@@ -401,6 +441,15 @@ window.addEventListener('keydown', (ev) => {
       setDrawMode(false);
       return;
     }
+    if (state.batchStudyExpanded && state.batchStudyResult) {
+      state.batchStudyExpanded = false;
+      renderBatchStudyDock();
+      return;
+    }
+    if (state.batchSelectMode) {
+      setBatchSelectMode(false);
+      return;
+    }
     if (state.liveTextMode) {
       const subSel = typeof getPopupHighlightedSubstring === 'function' ? getPopupHighlightedSubstring() : '';
       if (subSel && window.getSelection) {
@@ -468,6 +517,11 @@ window.addEventListener('keydown', (ev) => {
     if (ev.key === 's' || ev.key === 'S') {
       ev.preventDefault();
       setLiveTextMode(!state.liveTextMode);
+      return;
+    }
+    if (ev.key === 'b' || ev.key === 'B') {
+      ev.preventDefault();
+      setBatchSelectMode(!state.batchSelectMode);
       return;
     }
     if (!state.isViewerFullscreen && (ev.key === 'r' || ev.key === 'R')) {
@@ -788,7 +842,7 @@ let stagePan = null;
 el.viewerViewport.addEventListener('pointerdown', (ev) => {
   if (ev.button !== 0 || state.drawMode || boxManip) return;
   if (!getSelectedPage()) return;
-  if (ev.target.closest('#liveSelectionCard, button, input, a, #emptyViewerState')) return;
+  if (ev.target.closest('#liveSelectionCard, #batchStudyDock, [data-batch-region], button, input, a, #emptyViewerState')) return;
 
   const vpRect = el.viewerViewport.getBoundingClientRect();
   if (
@@ -1013,6 +1067,16 @@ el.btnToggleBoxes.addEventListener('click', () => {
 if (el.btnSelectTextMode) {
   el.btnSelectTextMode.addEventListener('click', () => {
     setLiveTextMode(!state.liveTextMode);
+  });
+}
+if (el.btnBatchSelectMode) {
+  el.btnBatchSelectMode.addEventListener('click', () => {
+    setBatchSelectMode(!state.batchSelectMode);
+  });
+}
+if (el.btnBannerExitBatch) {
+  el.btnBannerExitBatch.addEventListener('click', () => {
+    setBatchSelectMode(false);
   });
 }
 if (el.btnExitLiveTextMode) {
@@ -1260,8 +1324,8 @@ function syncLiveSelectionUI() {
     (Array.isArray(study.breakdown.vocab) && study.breakdown.vocab.length > 0) ||
     (Array.isArray(study.breakdown.grammar) && study.breakdown.grammar.length > 0)
   ));
-  const showPopupEn = activeTask === 'translate' || Boolean(hasTrans && study.showTranslation !== false);
-  const showPopupBd = activeTask === 'breakdown' || Boolean(hasBreakdown && study.showBreakdown);
+  const showPopupEn = Boolean(hasTrans && study.showTranslation !== false);
+  const showPopupBd = Boolean(activeTask) || Boolean(hasBreakdown && study.showBreakdown);
 
   if (el.liveSelectionCard) {
     el.liveSelectionCard.classList.toggle(
@@ -1306,23 +1370,10 @@ function syncLiveSelectionUI() {
     }
   }
 
-  // Sync Popup English button & English sub-panel
-  if (el.btnPopupEnglish) {
-    el.btnPopupEnglish.disabled = Boolean(activeTask);
-    const enActive = Boolean(hasTrans && !isStale && study.showTranslation !== false);
-    el.btnPopupEnglish.classList.toggle('is-active', enActive);
-    el.btnPopupEnglish.setAttribute('aria-pressed', enActive ? 'true' : 'false');
-    if (activeTask === 'translate') {
-      el.btnPopupEnglish.textContent = 'Translating…';
-    } else if (hasTrans && !isStale) {
-      el.btnPopupEnglish.textContent = study.showTranslation === false ? 'English' : 'Hide English';
-    } else {
-      el.btnPopupEnglish.textContent = 'English';
-    }
-  }
+  // Sync Popup English output card (populated in the same single request alongside Vocab & Grammar)
   if (el.liveSelEnglishWrap) {
     el.liveSelEnglishWrap.classList.toggle('hidden', !showPopupEn);
-    if (showPopupEn) {
+    if (showPopupEn && hasTrans) {
       let selectingInsideEn = false;
       if (window.getSelection && el.liveSelEnglishWrap) {
         const s = window.getSelection();
@@ -1333,20 +1384,23 @@ function syncLiveSelectionUI() {
         }
       }
       if (!selectingInsideEn) {
-        if (activeTask === 'translate') {
-          if (el.liveSelEnglishLabel) el.liveSelEnglishLabel.textContent = 'Translating to English…';
-          if (el.liveSelEnglishBody) el.liveSelEnglishBody.textContent = 'Analyzing manga context with Gemini…';
-          if (el.liveSelNuanceBody) el.liveSelNuanceBody.classList.add('hidden');
-          if (el.btnCopyPopupEnglish) el.btnCopyPopupEnglish.classList.add('hidden');
-        } else if (hasTrans) {
-          if (el.liveSelEnglishLabel) el.liveSelEnglishLabel.textContent = 'English';
-          if (el.liveSelEnglishBody) el.liveSelEnglishBody.textContent = study.english;
-          if (el.btnCopyPopupEnglish) el.btnCopyPopupEnglish.classList.remove('hidden');
-          if (el.liveSelNuanceBody) {
-            const nu = (study.nuance || '').trim();
-            el.liveSelNuanceBody.classList.toggle('hidden', !nu);
-            if (nu) el.liveSelNuanceBody.textContent = 'Tone / Nuance: ' + nu;
-          }
+        const aiRom = (study.romaji || '').trim();
+        if (el.liveSelEnglishLabel) {
+          el.liveSelEnglishLabel.textContent = aiRom ? 'English & Verified Romaji' : 'English';
+        }
+        if (el.liveSelStudyRomajiBody) {
+          el.liveSelStudyRomajiBody.classList.toggle('hidden', !aiRom);
+          if (aiRom) el.liveSelStudyRomajiBody.textContent = aiRom;
+        }
+        if (el.btnCopyPopupStudyRomaji) {
+          el.btnCopyPopupStudyRomaji.classList.toggle('hidden', !aiRom);
+        }
+        if (el.liveSelEnglishBody) el.liveSelEnglishBody.textContent = study.english;
+        if (el.btnCopyPopupEnglish) el.btnCopyPopupEnglish.classList.remove('hidden');
+        if (el.liveSelNuanceBody) {
+          const nu = (study.nuance || '').trim();
+          el.liveSelNuanceBody.classList.toggle('hidden', !nu);
+          if (nu) el.liveSelNuanceBody.textContent = 'Tone / Nuance: ' + nu;
         }
       }
     }
@@ -1365,18 +1419,29 @@ function syncLiveSelectionUI() {
     }
   }
 
-  // Sync Popup Vocab & Grammar button & Breakdown sub-panel
+  // Sync Popup + Batch button
+  if (el.btnPopupBatchToggle) {
+    const bOrder = getBlockBatchOrderIndex(info.blk.id);
+    const inBatch = bOrder >= 0;
+    el.btnPopupBatchToggle.classList.toggle('is-in-batch', inBatch);
+    el.btnPopupBatchToggle.setAttribute('aria-pressed', inBatch ? 'true' : 'false');
+    el.btnPopupBatchToggle.textContent = inBatch ? ('#' + (bOrder + 1) + ' in Batch') : '+ Batch';
+  }
+
+  // Sync Unified Popup EN + Romaji + Vocab & Grammar button & Breakdown sub-panel
   if (el.btnPopupBreakdown) {
     el.btnPopupBreakdown.disabled = Boolean(activeTask);
     const bdActive = Boolean(hasBreakdown && !isStale && study.showBreakdown);
     el.btnPopupBreakdown.classList.toggle('is-active-bd', bdActive);
     el.btnPopupBreakdown.setAttribute('aria-pressed', bdActive ? 'true' : 'false');
-    if (activeTask === 'breakdown') {
-      el.btnPopupBreakdown.textContent = 'Breaking down…';
+    if (activeTask) {
+      el.btnPopupBreakdown.textContent = 'Analyzing…';
     } else if (hasBreakdown && !isStale) {
-      el.btnPopupBreakdown.textContent = study.showBreakdown ? 'Hide Vocab & Grammar' : 'Vocab & Grammar';
+      el.btnPopupBreakdown.textContent = bdActive
+        ? 'Hide Study'
+        : 'Show Study';
     } else {
-      el.btnPopupBreakdown.textContent = 'Vocab & Grammar';
+      el.btnPopupBreakdown.textContent = 'EN + Romaji + Vocab & Grammar';
     }
   }
   if (el.liveSelBreakdownWrap && el.liveSelBreakdownBody) {
@@ -1396,17 +1461,17 @@ function syncLiveSelectionUI() {
             : ('+ Save All (' + popupVocabList.length + ')');
         }
       }
-      const renderKey = activeTask === 'breakdown'
+      const renderKey = activeTask
         ? ('loading:' + info.blk.id)
         : ('ready:' + info.blk.id + ':' + (study ? study.sourceText : ''));
       if (el.liveSelBreakdownBody.getAttribute('data-render-key') !== renderKey) {
         el.liveSelBreakdownBody.setAttribute('data-render-key', renderKey);
         el.liveSelBreakdownBody.innerHTML = '';
-        if (activeTask === 'breakdown') {
-          if (el.liveSelBreakdownLabel) el.liveSelBreakdownLabel.textContent = 'Analyzing Vocab & Grammar…';
+        if (activeTask) {
+          if (el.liveSelBreakdownLabel) el.liveSelBreakdownLabel.textContent = 'Translating & Breaking Down…';
           const p = document.createElement('p');
           p.className = 'text-xs text-slate-500';
-          p.textContent = 'Breaking down Japanese readings, dictionary forms & grammar…';
+          p.textContent = 'Translating into English and analyzing Japanese vocabulary & grammar in one pass…';
           el.liveSelBreakdownBody.appendChild(p);
         } else if (hasBreakdown) {
           if (el.liveSelBreakdownLabel) el.liveSelBreakdownLabel.textContent = 'Vocab & Grammar';
@@ -1717,27 +1782,6 @@ if (el.btnTogglePopupRomaji) {
     positionOpenLivePopup();
   });
 }
-if (el.btnPopupEnglish) {
-  el.btnPopupEnglish.addEventListener('pointerdown', (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-  });
-  el.btnPopupEnglish.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    const info = getActivePopupBlockInfo();
-    if (!info) return;
-    const study = info.blk.study || null;
-    const isStale = Boolean(study && study.sourceText && study.sourceText !== info.text);
-    const hasTrans = Boolean(study && study.english);
-    if (hasTrans && !isStale) {
-      info.blk.study.showTranslation = info.blk.study.showTranslation === false;
-      notifyStudyViewsUpdated(info.blk.id);
-    } else {
-      requestBubbleTranslation(info.page, info.blk, isStale);
-    }
-  });
-}
 if (el.btnPopupBreakdown) {
   el.btnPopupBreakdown.addEventListener('pointerdown', (ev) => {
     ev.preventDefault();
@@ -1755,7 +1799,9 @@ if (el.btnPopupBreakdown) {
       (Array.isArray(study.breakdown.grammar) && study.breakdown.grammar.length > 0)
     ));
     if (hasBreakdown && !isStale) {
-      info.blk.study.showBreakdown = !info.blk.study.showBreakdown;
+      const nextOpen = !Boolean(study.showBreakdown);
+      info.blk.study.showTranslation = nextOpen;
+      info.blk.study.showBreakdown = nextOpen;
       notifyStudyViewsUpdated(info.blk.id);
     } else {
       requestBubbleBreakdown(info.page, info.blk, isStale);
@@ -1807,15 +1853,37 @@ if (el.btnPopupRefreshStudy) {
     ev.stopPropagation();
     const info = getActivePopupBlockInfo();
     if (!info) return;
-    const study = info.blk.study || null;
-    const hasBreakdown = Boolean(study && study.breakdown && (
-      (Array.isArray(study.breakdown.vocab) && study.breakdown.vocab.length > 0) ||
-      (Array.isArray(study.breakdown.grammar) && study.breakdown.grammar.length > 0)
-    ));
-    if (hasBreakdown && study.showBreakdown) {
-      requestBubbleBreakdown(info.page, info.blk, true);
-    } else {
-      requestBubbleTranslation(info.page, info.blk, true);
+    requestBubbleBreakdown(info.page, info.blk, true);
+  });
+}
+if (el.btnPopupBatchToggle) {
+  el.btnPopupBatchToggle.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnPopupBatchToggle.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const info = getActivePopupBlockInfo();
+    if (!info) return;
+    const ord = toggleBlockInBatchQueue(info.page.id, info.blk.id);
+    if (ord > 0) {
+      showToast('Added as Batch #' + ord + ' (' + state.batchQueue.length + ' selected)');
+    }
+  });
+}
+if (el.btnCopyPopupStudyRomaji) {
+  el.btnCopyPopupStudyRomaji.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnCopyPopupStudyRomaji.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const info = getActivePopupBlockInfo();
+    const rTxt = info && info.blk && info.blk.study ? (info.blk.study.romaji || '').trim() : '';
+    if (rTxt) {
+      copyTextSafe(rTxt, 'Copied verified Romaji!');
     }
   });
 }
@@ -1948,6 +2016,7 @@ if (el.viewerViewport) {
       (state.livePopupBlockId || state.selectedBlockId) &&
       !ev.target.closest('[data-live-text]') &&
       !ev.target.closest('#liveSelectionCard') &&
+      !ev.target.closest('#batchStudyDock') &&
       !ev.target.closest('button, input, textarea, select, a')
     ) {
       closeLiveBubblePopup();
@@ -2130,6 +2199,53 @@ if (el.btnFsSelectText) {
     ev.stopPropagation();
     wakeFullscreenHud();
     setLiveTextMode(!state.liveTextMode);
+  });
+}
+if (el.btnFsBatchSelect) {
+  el.btnFsBatchSelect.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    wakeFullscreenHud();
+    setBatchSelectMode(!state.batchSelectMode);
+  });
+}
+if (el.batchStudyDock) {
+  el.batchStudyDock.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+  el.batchStudyDock.addEventListener('click', (ev) => ev.stopPropagation());
+  el.batchStudyDock.addEventListener('dblclick', (ev) => ev.stopPropagation());
+}
+if (el.btnRunBatchStudy) {
+  el.btnRunBatchStudy.addEventListener('click', () => {
+    requestOrderedBatchStudy();
+  });
+}
+if (el.btnToggleBatchResults) {
+  el.btnToggleBatchResults.addEventListener('click', () => {
+    state.batchStudyExpanded = !state.batchStudyExpanded;
+    renderBatchStudyDock();
+  });
+}
+if (el.btnBatchUndoLast) {
+  el.btnBatchUndoLast.addEventListener('click', () => {
+    if (state.batchQueue.length > 0) {
+      removeBatchStepAt(state.batchQueue.length - 1);
+    }
+  });
+}
+if (el.btnClearBatchQueue) {
+  el.btnClearBatchQueue.addEventListener('click', () => {
+    clearBatchStudyQueue();
+    showToast('Cleared batch selection queue.');
+  });
+}
+if (el.btnCloseBatchDock) {
+  el.btnCloseBatchDock.addEventListener('click', () => {
+    if (state.batchSelectMode) {
+      setBatchSelectMode(false);
+    }
+    if (state.batchQueue.length > 0 || state.batchStudyResult) {
+      clearBatchStudyQueue();
+    }
+    renderBatchStudyDock();
   });
 }
 if (el.viewerSection) {

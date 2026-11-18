@@ -1762,3 +1762,207 @@ html.dark .md-vocab-input {
   color: #e8eaed !important;
   border-color: #3c4043 !important;
 }
+
+/* Verified Romaji in Translation + Cross-Page Ordered Batch Bubble Selector & Dock */
+.md-live-study-romaji {
+  font-size: 12.5px;
+  font-weight: 500;
+  font-style: italic;
+  line-height: 1.45;
+  color: #174ea6;
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+  border-bottom: 1px dashed rgba(26, 115, 232, 0.24);
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  word-break: break-word;
+}
+html.dark .md-live-study-romaji {
+  color: #8ab4f8;
+  border-bottom-color: rgba(138, 180, 248, 0.28);
+}
+
+.batch-select-region {
+  position: absolute;
+  border: 2px dashed rgba(13, 148, 136, 0.72);
+  background-color: rgba(13, 148, 136, 0.08);
+  border-radius: 5px;
+  cursor: pointer;
+  user-select: none;
+  z-index: 20;
+  transition: background-color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.batch-select-region:hover {
+  background-color: rgba(13, 148, 136, 0.18);
+  border-color: #0d9488;
+  border-style: solid;
+}
+.batch-select-region.is-queued {
+  border: 2.5px solid #0d9488;
+  background-color: rgba(13, 148, 136, 0.2);
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.24);
+  z-index: 26;
+}
+html.dark .batch-select-region {
+  border-color: rgba(45, 212, 191, 0.72);
+  background-color: rgba(45, 212, 191, 0.1);
+}
+html.dark .batch-select-region.is-queued {
+  border-color: #2dd4bf;
+  background-color: rgba(45, 212, 191, 0.22);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.28);
+}
+
+.batch-order-badge {
+  position: absolute;
+  top: -11px;
+  left: -11px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  background-color: #0f766e;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  z-index: 30;
+}
+html.dark .batch-order-badge {
+  background-color: #2dd4bf;
+  color: #0f172a;
+}
+
+.md-romaji-pill.is-in-batch {
+  background-color: #ccfbf1;
+  border-color: rgba(13, 148, 136, 0.5);
+  color: #0f766e;
+  font-weight: 600;
+}
+html.dark .md-romaji-pill.is-in-batch {
+  background-color: rgba(45, 212, 191, 0.2);
+  border-color: rgba(45, 212, 191, 0.5);
+  color: #5eead4;
+}
+
+.md-batch-dock {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 9995;
+  width: min(690px, calc(100vw - 20px));
+  background-color: #ffffff;
+  color: #202124;
+  border: 1.5px solid #dadce0;
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(32, 33, 36, 0.28), 0 2px 8px rgba(32, 33, 36, 0.14);
+  padding: 9px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+html.dark .md-batch-dock {
+  background-color: #242528;
+  color: #e8eaed;
+  border-color: #3c4043;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.72);
+}
+.md-batch-dock-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.md-batch-count-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  background-color: #ccfbf1;
+  color: #0f766e;
+}
+html.dark .md-batch-count-pill {
+  background-color: rgba(45, 212, 191, 0.2);
+  color: #5eead4;
+}
+.md-batch-seq-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.md-batch-seq-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  background-color: var(--md-surface-subtle);
+  border: 1px solid var(--md-outline);
+  color: var(--md-ink);
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+.md-batch-seq-chip:hover {
+  border-color: var(--md-primary);
+}
+.md-batch-seq-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  background-color: #0f766e;
+  color: #ffffff;
+}
+html.dark .md-batch-seq-num {
+  background-color: #2dd4bf;
+  color: #0f172a;
+}
+.md-batch-seq-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  font-size: 11px;
+  color: var(--md-ink-secondary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.md-batch-seq-remove:hover {
+  background-color: rgba(217, 48, 37, 0.14);
+  color: var(--md-danger);
+}
+.md-batch-results-panel {
+  max-height: min(54vh, 430px);
+  overflow-y: auto;
+  border-top: 1px solid var(--md-outline);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+html.dark #batchSelectBanner {
+  background-color: rgba(20, 184, 166, 0.14) !important;
+  border-color: rgba(45, 212, 191, 0.32) !important;
+  color: #99f6e4 !important;
+}

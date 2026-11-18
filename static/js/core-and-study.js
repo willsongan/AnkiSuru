@@ -220,6 +220,11 @@ const state = {
   showBoxes: true,
   liveTextMode: false,
   livePopupBlockId: null,
+  batchSelectMode: false,
+  batchQueue: [], // [{ pageId, blockId }] in exact user-selected order across pages
+  batchStudyResult: null,
+  batchStudyExpanded: false,
+  isRunningBatchStudy: false,
   showPopupRomaji: false,
   isViewerFullscreen: false,
   preFsShowBoxes: true,
@@ -336,6 +341,8 @@ const el = {
   activePageTitle: document.getElementById('activePageTitle'),
   btnToolbarReviewJump: document.getElementById('btnToolbarReviewJump'),
   btnSelectTextMode: document.getElementById('btnSelectTextMode'),
+  btnBatchSelectMode: document.getElementById('btnBatchSelectMode'),
+  batchSelectBtnLabel: document.getElementById('batchSelectBtnLabel'),
   btnToggleBoxes: document.getElementById('btnToggleBoxes'),
   iconBoxesOn: document.getElementById('iconBoxesOn'),
   iconBoxesOff: document.getElementById('iconBoxesOff'),
@@ -356,6 +363,8 @@ const el = {
   btnFsZoomFit: document.getElementById('btnFsZoomFit'),
   btnFsZoomIn: document.getElementById('btnFsZoomIn'),
   btnFsSelectText: document.getElementById('btnFsSelectText'),
+  btnFsBatchSelect: document.getElementById('btnFsBatchSelect'),
+  fsBatchBtnLabel: document.getElementById('fsBatchBtnLabel'),
   btnExitFullscreen: document.getElementById('btnExitFullscreen'),
   drawModeBanner: document.getElementById('drawModeBanner'),
   btnExitDrawMode: document.getElementById('btnExitDrawMode'),
@@ -363,13 +372,16 @@ const el = {
   liveBannerStatusText: document.getElementById('liveBannerStatusText'),
   btnCopySelectedLiveText: document.getElementById('btnCopySelectedLiveText'),
   btnExitLiveTextMode: document.getElementById('btnExitLiveTextMode'),
+  batchSelectBanner: document.getElementById('batchSelectBanner'),
+  batchBannerStatusText: document.getElementById('batchBannerStatusText'),
+  btnBannerExitBatch: document.getElementById('btnBannerExitBatch'),
   liveSelectionCard: document.getElementById('liveSelectionCard'),
   liveSelMetaLabel: document.getElementById('liveSelMetaLabel'),
   btnVerifyPopupBubble: document.getElementById('btnVerifyPopupBubble'),
   btnDeletePopupBubble: document.getElementById('btnDeletePopupBubble'),
   btnTogglePopupRomaji: document.getElementById('btnTogglePopupRomaji'),
-  btnPopupEnglish: document.getElementById('btnPopupEnglish'),
   btnPopupBreakdown: document.getElementById('btnPopupBreakdown'),
+  btnPopupBatchToggle: document.getElementById('btnPopupBatchToggle'),
   btnPopupSaveWord: document.getElementById('btnPopupSaveWord'),
   btnPopupSaveAllVocab: document.getElementById('btnPopupSaveAllVocab'),
   btnPopupRefreshStudy: document.getElementById('btnPopupRefreshStudy'),
@@ -383,7 +395,9 @@ const el = {
   liveSelRomajiBody: document.getElementById('liveSelRomajiBody'),
   liveSelEnglishWrap: document.getElementById('liveSelEnglishWrap'),
   liveSelEnglishLabel: document.getElementById('liveSelEnglishLabel'),
+  btnCopyPopupStudyRomaji: document.getElementById('btnCopyPopupStudyRomaji'),
   btnCopyPopupEnglish: document.getElementById('btnCopyPopupEnglish'),
+  liveSelStudyRomajiBody: document.getElementById('liveSelStudyRomajiBody'),
   liveSelEnglishBody: document.getElementById('liveSelEnglishBody'),
   liveSelNuanceBody: document.getElementById('liveSelNuanceBody'),
   liveSelBreakdownWrap: document.getElementById('liveSelBreakdownWrap'),
@@ -428,6 +442,16 @@ const el = {
   panelPageBubbles: document.getElementById('panelPageBubbles'),
   panelReviewQueue: document.getElementById('panelReviewQueue'),
   panelSavedVocab: document.getElementById('panelSavedVocab'),
+  batchStudyDock: document.getElementById('batchStudyDock'),
+  batchDockCountBadge: document.getElementById('batchDockCountBadge'),
+  batchDockHintText: document.getElementById('batchDockHintText'),
+  btnRunBatchStudy: document.getElementById('btnRunBatchStudy'),
+  btnToggleBatchResults: document.getElementById('btnToggleBatchResults'),
+  btnBatchUndoLast: document.getElementById('btnBatchUndoLast'),
+  btnClearBatchQueue: document.getElementById('btnClearBatchQueue'),
+  btnCloseBatchDock: document.getElementById('btnCloseBatchDock'),
+  batchSequenceStrip: document.getElementById('batchSequenceStrip'),
+  batchStudyResultsPanel: document.getElementById('batchStudyResultsPanel'),
   toastContainer: document.getElementById('toastContainer')
 };
 
@@ -839,7 +863,7 @@ async function callGeminiStructuredJson(systemPrompt, userPrompt, schema) {
 async function getCachedBubbleStudy(jpText) {
   const norm = (jpText || '').trim();
   if (!norm) return null;
-  const key = 'gemini_study_v1_' + hashStudyText(norm);
+  const key = 'gemini_study_v2_' + hashStudyText(norm);
   if (inMemoryStudyCache.has(key)) return inMemoryStudyCache.get(key);
   const stored = await idbGet(key);
   if (stored && stored.sourceText === norm) {
@@ -852,7 +876,7 @@ async function getCachedBubbleStudy(jpText) {
 async function putCachedBubbleStudy(jpText, studyObj) {
   const norm = (jpText || '').trim();
   if (!norm || !studyObj) return;
-  const key = 'gemini_study_v1_' + hashStudyText(norm);
+  const key = 'gemini_study_v2_' + hashStudyText(norm);
   const payload = {
     sourceText: norm,
     romaji: studyObj.romaji || '',
@@ -886,40 +910,39 @@ const TRANSLATE_SCHEMA = {
   required: ['english', 'nuance']
 };
 
+const VOCAB_ITEM_SCHEMA_DEF = {
+  type: 'OBJECT',
+  properties: {
+    surface: { type: 'STRING', description: 'Exact word or morpheme as it appears in the bubble.' },
+    reading: { type: 'STRING', description: 'Hiragana reading.' },
+    romaji: { type: 'STRING', description: 'Hepburn romaji for this word.' },
+    dictForm: { type: 'STRING', description: 'Dictionary base form (leave same as surface if unchanged).' },
+    pos: { type: 'STRING', description: 'Concise part of speech + JLPT hint if applicable, e.g. Potential Verb · N4, Particle, Slang.' },
+    meaning: { type: 'STRING', description: 'Clear English meaning in this context.' }
+  },
+  required: ['surface', 'reading', 'romaji', 'dictForm', 'pos', 'meaning']
+};
+
+const GRAMMAR_ITEM_SCHEMA_DEF = {
+  type: 'OBJECT',
+  properties: {
+    pattern: { type: 'STRING', description: 'Grammar point, conjugation, contraction, or sentence-ending particle used.' },
+    level: { type: 'STRING', description: 'Level or register tag, e.g. N5, N4, Casual, Masculine/Feminine.' },
+    explanation: { type: 'STRING', description: 'Clear learner-friendly explanation of how it works here.' }
+  },
+  required: ['pattern', 'level', 'explanation']
+};
+
 const BREAKDOWN_SCHEMA = {
   type: 'OBJECT',
   properties: {
+    romaji: { type: 'STRING', description: 'Context-verified word-spaced Revised Hepburn romaji for the entire bubble (choosing exact kanji readings & character names from manga context).' },
     english: { type: 'STRING', description: 'Natural English translation in manga context.' },
     nuance: { type: 'STRING', description: 'Brief tone/register note.' },
-    vocab: {
-      type: 'ARRAY',
-      items: {
-        type: 'OBJECT',
-        properties: {
-          surface: { type: 'STRING', description: 'Exact word or morpheme as it appears in the bubble.' },
-          reading: { type: 'STRING', description: 'Hiragana reading.' },
-          romaji: { type: 'STRING', description: 'Hepburn romaji for this word.' },
-          dictForm: { type: 'STRING', description: 'Dictionary base form (leave same as surface if unchanged).' },
-          pos: { type: 'STRING', description: 'Concise part of speech + JLPT hint if applicable, e.g. Potential Verb · N4, Particle, Slang.' },
-          meaning: { type: 'STRING', description: 'Clear English meaning in this context.' }
-        },
-        required: ['surface', 'reading', 'romaji', 'dictForm', 'pos', 'meaning']
-      }
-    },
-    grammar: {
-      type: 'ARRAY',
-      items: {
-        type: 'OBJECT',
-        properties: {
-          pattern: { type: 'STRING', description: 'Grammar point, conjugation, contraction, or sentence-ending particle used.' },
-          level: { type: 'STRING', description: 'Level or register tag, e.g. N5, N4, Casual, Masculine/Feminine.' },
-          explanation: { type: 'STRING', description: 'Clear learner-friendly explanation of how it works here.' }
-        },
-        required: ['pattern', 'level', 'explanation']
-      }
-    }
+    vocab: { type: 'ARRAY', items: VOCAB_ITEM_SCHEMA_DEF },
+    grammar: { type: 'ARRAY', items: GRAMMAR_ITEM_SCHEMA_DEF }
   },
-  required: ['english', 'nuance', 'vocab', 'grammar']
+  required: ['romaji', 'english', 'nuance', 'vocab', 'grammar']
 };
 
 const PAGE_BATCH_TRANSLATE_SCHEMA = {
@@ -931,18 +954,47 @@ const PAGE_BATCH_TRANSLATE_SCHEMA = {
         type: 'OBJECT',
         properties: {
           bubbleNumber: { type: 'INTEGER' },
+          romaji: { type: 'STRING', description: 'Context-verified word-spaced Revised Hepburn romaji.' },
           english: { type: 'STRING' },
           nuance: { type: 'STRING' }
         },
-        required: ['bubbleNumber', 'english', 'nuance']
+        required: ['bubbleNumber', 'romaji', 'english', 'nuance']
       }
     }
   },
   required: ['items']
 };
 
+const ORDERED_BATCH_STUDY_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    connectedRomaji: { type: 'STRING', description: 'Full connected Revised Hepburn romaji across the user-ordered bubble sequence.' },
+    connectedEnglish: { type: 'STRING', description: 'Seamless natural English translation of the entire user-ordered bubble sequence read together.' },
+    contextNote: { type: 'STRING', description: 'Concise note explaining how split sentences, speakers, or implied subjects connect across the ordered bubbles.' },
+    items: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          stepNumber: { type: 'INTEGER', description: '1-based step number matching the user-selected order.' },
+          romaji: { type: 'STRING', description: 'Context-verified word-spaced Revised Hepburn romaji for this bubble.' },
+          english: { type: 'STRING', description: 'Context-aware English translation for this bubble.' },
+          nuance: { type: 'STRING', description: 'Brief tone/speaker/clause-continuity note.' },
+          vocab: { type: 'ARRAY', items: VOCAB_ITEM_SCHEMA_DEF },
+          grammar: { type: 'ARRAY', items: GRAMMAR_ITEM_SCHEMA_DEF }
+        },
+        required: ['stepNumber', 'romaji', 'english', 'nuance', 'vocab', 'grammar']
+      }
+    }
+  },
+  required: ['connectedRomaji', 'connectedEnglish', 'contextNote', 'items']
+};
+
 function notifyStudyViewsUpdated(blockId) {
   renderRightPanel();
+  if (typeof renderBatchStudyDock === 'function') {
+    renderBatchStudyDock();
+  }
   if (
     state.liveTextMode &&
     (!blockId || state.livePopupBlockId === blockId) &&
@@ -955,69 +1007,6 @@ function notifyStudyViewsUpdated(blockId) {
   }
 }
 
-async function requestBubbleTranslation(page, blk, forceRefresh) {
-  const jp = (blk && blk.text ? blk.text : '').trim();
-  if (!jp) {
-    showToast('Extract Japanese text for this bubble first.', 'warn');
-    return;
-  }
-  if (state.gemini.activeTasks.has(blk.id)) return;
-
-  if (!forceRefresh) {
-    const cached = await getCachedBubbleStudy(jp);
-    if (cached && cached.english) {
-      blk.study = {
-        sourceText: jp,
-        romaji: '',
-        english: cached.english,
-        nuance: cached.nuance || '',
-        breakdown: (blk.study && blk.study.sourceText === jp && blk.study.breakdown) || cached.breakdown || null,
-        showTranslation: true,
-        showBreakdown: Boolean(blk.study && blk.study.showBreakdown)
-      };
-      notifyStudyViewsUpdated(blk.id);
-      return;
-    }
-  }
-
-  state.gemini.activeTasks.set(blk.id, 'translate');
-  notifyStudyViewsUpdated(blk.id);
-
-  try {
-    const sysPrompt =
-      'You are an expert Japanese manga translator. ' +
-      'Given a Japanese manga speech bubble (plus surrounding bubbles on the same page for context), ' +
-      'output a natural idiomatic English translation fitting the manga context and a concise register/nuance note.';
-    const ctx = buildPageDialogueContext(page, blk.id);
-    const userPrompt =
-      'Surrounding page bubbles in reading order:\n' + (ctx || jp) +
-      '\n\nTarget Japanese bubble to translate into English:\n' + jp;
-
-    const res = await callGeminiStructuredJson(sysPrompt, userPrompt, TRANSLATE_SCHEMA);
-    const existingBreakdown = (!forceRefresh && blk.study && blk.study.sourceText === jp)
-      ? blk.study.breakdown
-      : null;
-
-    blk.study = {
-      sourceText: jp,
-      romaji: '',
-      english: res.english || '',
-      nuance: res.nuance || '',
-      breakdown: existingBreakdown,
-      showTranslation: true,
-      showBreakdown: Boolean(existingBreakdown && blk.study && blk.study.showBreakdown)
-    };
-    await putCachedBubbleStudy(jp, blk.study);
-  } catch (err) {
-    if (!err || err.message !== 'NO_API_KEY') {
-      showToast('English translation failed: ' + (err ? err.message : 'Unknown error'), 'error');
-    }
-  } finally {
-    state.gemini.activeTasks.delete(blk.id);
-    notifyStudyViewsUpdated(blk.id);
-  }
-}
-
 async function requestBubbleBreakdown(page, blk, forceRefresh) {
   const jp = (blk && blk.text ? blk.text : '').trim();
   if (!jp) {
@@ -1026,18 +1015,16 @@ async function requestBubbleBreakdown(page, blk, forceRefresh) {
   }
   if (state.gemini.activeTasks.has(blk.id)) return;
 
-  const keepShowTrans = Boolean(blk.study && blk.study.sourceText === jp && blk.study.showTranslation);
-
   if (!forceRefresh) {
     const cached = await getCachedBubbleStudy(jp);
-    if (cached && cached.breakdown && Array.isArray(cached.breakdown.vocab)) {
+    if (cached && cached.breakdown && Array.isArray(cached.breakdown.vocab) && cached.romaji) {
       blk.study = {
         sourceText: jp,
-        romaji: '',
+        romaji: cached.romaji || '',
         english: cached.english || (blk.study && blk.study.english) || '',
         nuance: cached.nuance || (blk.study && blk.study.nuance) || '',
         breakdown: cached.breakdown,
-        showTranslation: keepShowTrans,
+        showTranslation: true,
         showBreakdown: true
       };
       notifyStudyViewsUpdated(blk.id);
@@ -1051,37 +1038,41 @@ async function requestBubbleBreakdown(page, blk, forceRefresh) {
   try {
     const sysPrompt =
       'You are an expert Japanese language teacher specializing in learning Japanese through real manga dialogue. ' +
-      'Break down the target Japanese manga speech bubble thoroughly for a learner: ' +
-      '1) Provide a natural English translation and brief register/nuance note. ' +
+      'In a single response, translate, romanize, and break down the target Japanese manga speech bubble thoroughly for a learner: ' +
+      '1) Provide context-verified word-spaced Revised Hepburn romaji (carefully disambiguating kanji homographs, character names, and contractions in context), a natural English translation, and a brief register/nuance note. ' +
       '2) List every vocabulary word / key particle / compound in order of appearance with hiragana reading, romaji, dictionary base form, part-of-speech + JLPT level tag, and contextual English meaning. ' +
       '3) Explain every grammar structure, verb/adjective conjugation, colloquial manga contraction (e.g. てる, ちゃう, ん, ぞ, わね, のか), or omitted subject clearly.';
     const ctx = buildPageDialogueContext(page, blk.id);
     const userPrompt =
       'Surrounding page bubbles in reading order:\n' + (ctx || jp) +
-      '\n\nTarget Japanese bubble for full vocabulary & grammar breakdown:\n' + jp;
+      '\n\nTarget Japanese bubble for English + verified Romaji + vocabulary & grammar breakdown:\n' + jp;
 
     const res = await callGeminiStructuredJson(sysPrompt, userPrompt, BREAKDOWN_SCHEMA);
     blk.study = {
       sourceText: jp,
-      romaji: '',
+      romaji: res.romaji || (blk.study && blk.study.romaji) || '',
       english: res.english || (blk.study && blk.study.english) || '',
       nuance: res.nuance || (blk.study && blk.study.nuance) || '',
       breakdown: {
         vocab: Array.isArray(res.vocab) ? res.vocab : [],
         grammar: Array.isArray(res.grammar) ? res.grammar : []
       },
-      showTranslation: keepShowTrans,
+      showTranslation: true,
       showBreakdown: true
     };
     await putCachedBubbleStudy(jp, blk.study);
   } catch (err) {
     if (!err || err.message !== 'NO_API_KEY') {
-      showToast('Vocab & grammar breakdown failed: ' + (err ? err.message : 'Unknown error'), 'error');
+      showToast('Study breakdown failed: ' + (err ? err.message : 'Unknown error'), 'error');
     }
   } finally {
     state.gemini.activeTasks.delete(blk.id);
     notifyStudyViewsUpdated(blk.id);
   }
+}
+
+function requestBubbleTranslation(page, blk, forceRefresh) {
+  return requestBubbleBreakdown(page, blk, forceRefresh);
 }
 
 async function requestPageBatchTranslation(page) {
@@ -1100,7 +1091,8 @@ async function requestPageBatchTranslation(page) {
   try {
     const numberedLines = targets.map((t) => 'Bubble #' + t.num + ': ' + t.jp).join('\n');
     const sysPrompt =
-      'You are an expert Japanese manga translator. Translate every numbered speech bubble on this manga page into natural, context-aware English dialogue matching each bubbleNumber.';
+      'You are an expert Japanese manga translator. Translate and romanize every numbered speech bubble on this manga page in context. ' +
+      'Provide context-verified word-spaced Revised Hepburn romaji (resolving exact kanji readings in context) and natural English dialogue matching each bubbleNumber.';
     const userPrompt = 'Manga page speech bubbles in reading order:\n' + numberedLines;
 
     const res = await callGeminiStructuredJson(sysPrompt, userPrompt, PAGE_BATCH_TRANSLATE_SCHEMA);
@@ -1115,7 +1107,7 @@ async function requestPageBatchTranslation(page) {
       const prevBreakdown = (t.blk.study && t.blk.study.sourceText === t.jp) ? t.blk.study.breakdown : null;
       t.blk.study = {
         sourceText: t.jp,
-        romaji: '',
+        romaji: matched.romaji || '',
         english: matched.english || '',
         nuance: matched.nuance || '',
         breakdown: prevBreakdown,
@@ -1124,13 +1116,189 @@ async function requestPageBatchTranslation(page) {
       };
       await putCachedBubbleStudy(t.jp, t.blk.study);
     }
-    showToast('Translated ' + targets.length + ' bubble(s) into English!');
+    showToast('Translated ' + targets.length + ' bubble(s) with verified Romaji!');
   } catch (err) {
     if (!err || err.message !== 'NO_API_KEY') {
       showToast('Page translation failed: ' + (err ? err.message : 'Unknown error'), 'error');
     }
   } finally {
     state.gemini.isTranslatingPage = false;
+    notifyStudyViewsUpdated(null);
+  }
+}
+
+// -----------------------------------------------------------------------
+// Ordered Cross-Page Batch Bubble Queue & Connected Context Study Engine
+// -----------------------------------------------------------------------
+function resolveBatchQueueEntries() {
+  const valid = [];
+  const nextQueue = [];
+  (state.batchQueue || []).forEach((entry) => {
+    if (!entry || !entry.pageId || !entry.blockId) return;
+    const pageIdx = state.pages.findIndex((p) => p.id === entry.pageId);
+    if (pageIdx < 0) return;
+    const page = state.pages[pageIdx];
+    const blkIdx = (page.blocks || []).findIndex((b) => b.id === entry.blockId);
+    if (blkIdx < 0) return;
+    const blk = page.blocks[blkIdx];
+    const text = (blk.text || '').trim();
+    if (!text) return;
+    nextQueue.push({ pageId: page.id, blockId: blk.id });
+    valid.push({
+      step: valid.length + 1,
+      pageIdx,
+      page,
+      blkIdx,
+      bubbleNum: blkIdx + 1,
+      blk,
+      text
+    });
+  });
+  if (nextQueue.length !== (state.batchQueue ? state.batchQueue.length : 0)) {
+    state.batchQueue = nextQueue;
+  }
+  return valid;
+}
+
+function getBlockBatchOrderIndex(blockId) {
+  if (!blockId || !Array.isArray(state.batchQueue) || state.batchQueue.length === 0) return -1;
+  return state.batchQueue.findIndex((item) => item.blockId === blockId);
+}
+
+function toggleBlockInBatchQueue(pageId, blockId) {
+  if (!pageId || !blockId) return -1;
+  const page = state.pages.find((p) => p.id === pageId);
+  const blk = page && Array.isArray(page.blocks) ? page.blocks.find((b) => b.id === blockId) : null;
+  if (!blk || !(blk.text || '').trim()) {
+    showToast('Extract Japanese text on this bubble first before adding to Batch.', 'warn');
+    return -1;
+  }
+
+  const existingIdx = getBlockBatchOrderIndex(blockId);
+  if (existingIdx >= 0) {
+    state.batchQueue.splice(existingIdx, 1);
+    notifyBatchQueueUpdated();
+    return -1;
+  }
+
+  state.batchQueue.push({ pageId, blockId });
+  const newOrder = state.batchQueue.length;
+  notifyBatchQueueUpdated();
+  return newOrder;
+}
+
+function removeBatchStepAt(idx) {
+  if (idx < 0 || idx >= state.batchQueue.length) return;
+  state.batchQueue.splice(idx, 1);
+  if (state.batchQueue.length === 0) {
+    state.batchStudyResult = null;
+    state.batchStudyExpanded = false;
+  }
+  notifyBatchQueueUpdated();
+}
+
+function clearBatchStudyQueue() {
+  state.batchQueue = [];
+  state.batchStudyResult = null;
+  state.batchStudyExpanded = false;
+  notifyBatchQueueUpdated();
+}
+
+function notifyBatchQueueUpdated() {
+  resolveBatchQueueEntries();
+  if (typeof renderOverlayBoxes === 'function') renderOverlayBoxes();
+  if (typeof renderRightPanel === 'function' && state.activeTab === 'bubbles') renderRightPanel();
+  if (typeof renderBatchStudyDock === 'function') renderBatchStudyDock();
+  if (state.liveTextMode && state.livePopupBlockId && typeof syncLiveSelectionUI === 'function') {
+    syncLiveSelectionUI();
+  }
+}
+
+async function requestOrderedBatchStudy() {
+  const entries = resolveBatchQueueEntries();
+  if (entries.length === 0) {
+    showToast('Click speech bubbles in reading order first to build a batch.', 'warn');
+    return;
+  }
+  if (state.isRunningBatchStudy) return;
+
+  state.isRunningBatchStudy = true;
+  state.batchStudyExpanded = true;
+  if (typeof renderBatchStudyDock === 'function') renderBatchStudyDock();
+
+  try {
+    const orderedLines = entries.map(
+      (e) => 'Step ' + e.step + ' (Page ' + (e.pageIdx + 1) + ', Bubble #' + e.bubbleNum + '): ' + e.text
+    ).join('\n');
+
+    const sysPrompt =
+      'You are an expert Japanese manga translator and language teacher. ' +
+      'The user manually selected the following speech bubbles in EXACT reading sequence across panels/pages so that split sentences, cross-bubble clauses, speaker turns, and omitted pronouns connect with full context. ' +
+      'Use the full sequence together to disambiguate every kanji reading accurately! ' +
+      '1) Provide connectedRomaji (Revised Hepburn), connectedEnglish (how the full sequence reads smoothly together), and a concise contextNote explaining how the bubbles connect. ' +
+      '2) For EVERY step (matching stepNumber 1..' + entries.length + '), provide context-verified word-spaced Revised Hepburn romaji, natural English translation, nuance/continuity note, complete vocabulary list (surface, reading, romaji, dictForm, pos, meaning), and grammar explanations.';
+
+    const userPrompt =
+      'User-selected speech bubbles in exact reading order (' + entries.length + ' bubble(s)):\n' + orderedLines;
+
+    const res = await callGeminiStructuredJson(sysPrompt, userPrompt, ORDERED_BATCH_STUDY_SCHEMA);
+    const byStep = new Map();
+    (Array.isArray(res.items) ? res.items : []).forEach((it) => {
+      byStep.set(Number(it.stepNumber), it);
+    });
+
+    const stepOutputs = [];
+    for (let i = 0; i < entries.length; i++) {
+      const ent = entries[i];
+      const matched = byStep.get(ent.step) || (Array.isArray(res.items) ? res.items[i] : null) || {};
+      const vocabArr = Array.isArray(matched.vocab) ? matched.vocab : [];
+      const grammarArr = Array.isArray(matched.grammar) ? matched.grammar : [];
+
+      ent.blk.study = {
+        sourceText: ent.text,
+        romaji: matched.romaji || '',
+        english: matched.english || '',
+        nuance: matched.nuance || '',
+        breakdown: {
+          vocab: vocabArr,
+          grammar: grammarArr
+        },
+        showTranslation: true,
+        showBreakdown: true
+      };
+      await putCachedBubbleStudy(ent.text, ent.blk.study);
+
+      stepOutputs.push({
+        step: ent.step,
+        pageId: ent.page.id,
+        pageIdx: ent.pageIdx,
+        pageName: ent.page.name,
+        blockId: ent.blk.id,
+        bubbleNum: ent.bubbleNum,
+        jpText: ent.text,
+        romaji: matched.romaji || '',
+        english: matched.english || '',
+        nuance: matched.nuance || '',
+        vocab: vocabArr,
+        grammar: grammarArr
+      });
+    }
+
+    state.batchStudyResult = {
+      createdAt: Date.now(),
+      connectedRomaji: res.connectedRomaji || '',
+      connectedEnglish: res.connectedEnglish || '',
+      contextNote: res.contextNote || '',
+      steps: stepOutputs
+    };
+    state.batchStudyExpanded = true;
+    showToast('Analyzed ' + entries.length + ' ordered bubble(s) with full cross-bubble context!');
+  } catch (err) {
+    if (!err || err.message !== 'NO_API_KEY') {
+      showToast('Batch study failed: ' + (err ? err.message : 'Unknown error'), 'error');
+    }
+  } finally {
+    state.isRunningBatchStudy = false;
     notifyStudyViewsUpdated(null);
   }
 }
@@ -1269,6 +1437,9 @@ function notifySavedVocabChanged(opts) {
   }
   if (typeof syncSavedVocabIndicatorsInPlace === 'function') {
     syncSavedVocabIndicatorsInPlace();
+  }
+  if (typeof renderBatchStudyDock === 'function' && state.batchStudyExpanded && state.batchStudyResult) {
+    // syncSavedVocabIndicatorsInPlace already updates all [data-vocab-save-key] buttons inside #batchStudyDock in-place!
   }
   if (!options.skipRightRender && state.activeTab === 'vocab' && typeof renderSavedVocabPanel === 'function') {
     renderSavedVocabPanel();

@@ -479,7 +479,8 @@ function populateSampleGroundTruthForPage(page) {
         best = r;
       }
     }
-    if (best && bestDist < 180) {
+    const insideBox = best && best.cx >= blk.x1 && best.cx <= blk.x2 && best.cy >= blk.y1 && best.cy <= blk.y2;
+    if (best && (bestDist < 260 || insideBox)) {
       blk.text = best.text;
       blk.charConf = 0.99;
       filled++;
