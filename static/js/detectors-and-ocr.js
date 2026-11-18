@@ -522,7 +522,7 @@ async function recognizeCropMangaOcr(imgEl, box) {
       const res = await callSlot(slot, { type: 'run_mocr', inputBuf: pixelValues.buffer }, [pixelValues.buffer]);
       return {
         text: decodeTokenIdsToJapanese(res.ids || []),
-        charConf: res.avgConf || 0
+        charConf: normalizeConf01(res.avgConf !== undefined ? res.avgConf : 0)
       };
     } finally {
       releaseSlot(slot);
@@ -623,7 +623,7 @@ async function recognizeCropTesseract(imgEl, box) {
   const conf = (res && res.data && typeof res.data.confidence === 'number')
     ? res.data.confidence / 100
     : null;
-  return { text: cleaned, charConf: conf };
+  return { text: cleaned, charConf: normalizeConf01(conf) };
 }
 
 async function recognizeSingleBlock(imgEl, box) {
@@ -631,7 +631,7 @@ async function recognizeSingleBlock(imgEl, box) {
     try {
       const batchOut = await nativeOcrCropsBatch([{ imgEl, blk: box }]);
       if (batchOut && batchOut[0]) {
-        return { text: batchOut[0].text || '', charConf: batchOut[0].conf || null };
+        return { text: batchOut[0].text || '', charConf: normalizeConf01(batchOut[0].conf) };
       }
     } catch (_e) {
       if (isAbortError(_e)) throw new Error('ABORTED');
@@ -946,7 +946,9 @@ async function extractPagesQueue(targetPages) {
                   y2: Math.round(b[3]),
                   conf: typeof b[4] === 'number' ? b[4] : 0.9,
                   text: (resP.texts && resP.texts[bIdx]) || '',
-                  charConf: (resP.confs && resP.confs[bIdx]) || null
+                  charConf: normalizeConf01(resP.confs ? resP.confs[bIdx] : null),
+                  ocrAttempted: true,
+                  verified: false
                 }));
                 p.blocks = sortBlocksByReadingOrder(mapped, state.readingOrder);
                 p.boxesDetected = true;
@@ -960,7 +962,8 @@ async function extractPagesQueue(targetPages) {
                     const blk = prevBlocks[origIdx];
                     if (!blk) return;
                     blk.text = texts[kIdx] !== undefined ? texts[kIdx] : '';
-                    blk.charConf = confs[kIdx] !== undefined ? confs[kIdx] : null;
+                    blk.charConf = normalizeConf01(confs[kIdx]);
+                    blk.ocrAttempted = true;
                     blk.verified = false;
                     nextBlocks.push(blk);
                   });
@@ -968,7 +971,8 @@ async function extractPagesQueue(targetPages) {
                 } else {
                   (p.blocks || []).forEach((blk, bIdx) => {
                     blk.text = texts[bIdx] !== undefined ? texts[bIdx] : (blk.text || '');
-                    blk.charConf = confs[bIdx] !== undefined ? confs[bIdx] : blk.charConf;
+                    blk.charConf = confs[bIdx] !== undefined ? normalizeConf01(confs[bIdx]) : normalizeConf01(blk.charConf);
+                    blk.ocrAttempted = true;
                     blk.verified = false;
                   });
                 }
@@ -979,6 +983,7 @@ async function extractPagesQueue(targetPages) {
               }
               totalPrunedBoxes += pagePruned;
               p.status = 'done';
+              p.ocrCompleted = true;
               totalExtractedBubbles += (p.blocks ? p.blocks.length : 0);
               updatePageFullText(p);
               updatePageCardInPlace(p);
@@ -1082,7 +1087,8 @@ async function extractPagesQueue(targetPages) {
             const res = await recognizeSingleBlock(job.imgEl, job.blk);
             state.activeOcrBlockIds.delete(job.blk.id);
             job.blk.text = res.text;
-            job.blk.charConf = res.charConf;
+            job.blk.charConf = normalizeConf01(res.charConf);
+            job.blk.ocrAttempted = true;
             job.blk.verified = false;
             updatePageFullText(job.page);
 
@@ -1095,6 +1101,7 @@ async function extractPagesQueue(targetPages) {
                 totalExtractedBubbles = Math.max(0, totalExtractedBubbles - prunedHere);
               }
               job.page.status = 'done';
+              job.page.ocrCompleted = true;
             }
 
             doneBubblesGlobal++;

@@ -491,4 +491,3 @@ function populateSampleGroundTruthForPage(page) {
   }
   return filled > 0;
 }
-

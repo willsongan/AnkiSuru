@@ -1,16 +1,22 @@
 "use strict";
 
-// Initialize Review Queue state & DOM references (modularized so core-and-study.js stays untouched)
+// Defensive Review Queue state & DOM fallback bindings
 if (typeof state === 'object' && state) {
   if (state.filterReviewPagesOnly === undefined) state.filterReviewPagesOnly = false;
   if (state.reviewQueuePageId === undefined) state.reviewQueuePageId = null;
+  if (state.reviewSortMode === undefined) state.reviewSortMode = 'page';
 }
 if (typeof el === 'object' && el) {
   if (!el.btnSidebarReviewFilter) el.btnSidebarReviewFilter = document.getElementById('btnSidebarReviewFilter');
+  if (!el.btnToolbarReviewJump) el.btnToolbarReviewJump = document.getElementById('btnToolbarReviewJump');
   if (!el.btnVerifyPopupBubble) el.btnVerifyPopupBubble = document.getElementById('btnVerifyPopupBubble');
   if (!el.btnDeletePopupBubble) el.btnDeletePopupBubble = document.getElementById('btnDeletePopupBubble');
   if (!el.tabBtnReviewQueue) el.tabBtnReviewQueue = document.getElementById('tabBtnReviewQueue');
   if (!el.reviewQueueCountBadge) el.reviewQueueCountBadge = document.getElementById('reviewQueueCountBadge');
+  if (!el.globalReviewBanner) el.globalReviewBanner = document.getElementById('globalReviewBanner');
+  if (!el.globalReviewBannerText) el.globalReviewBannerText = document.getElementById('globalReviewBannerText');
+  if (!el.btnBannerOpenReview) el.btnBannerOpenReview = document.getElementById('btnBannerOpenReview');
+  if (!el.btnBannerNextReview) el.btnBannerNextReview = document.getElementById('btnBannerNextReview');
   if (!el.panelReviewQueue) el.panelReviewQueue = document.getElementById('panelReviewQueue');
 }
 
@@ -48,31 +54,33 @@ function clearPageDropIndicators() {
 }
 
 function applyPageStatusBadgeStyle(statusBadge, page) {
-  if (page.status === 'done') {
-    const revCount = countPageReviewBlocks(page);
-    if (revCount > 0) {
-      statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300';
-      statusBadge.textContent = '⚠ ' + revCount + ' <90%';
-      statusBadge.title = revCount + ' bubble(s) below 90% OCR confidence need review';
-    } else {
-      statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800';
-      statusBadge.textContent = 'Extracted';
-      statusBadge.title = '';
-    }
-  } else if (page.status === 'detecting') {
+  const revCount = countPageReviewBlocks(page);
+  if (page.status === 'detecting') {
     statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 animate-pulse';
     statusBadge.textContent = 'Detecting…';
+    statusBadge.title = '';
   } else if (page.status === 'recognizing') {
     statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 animate-pulse';
-    statusBadge.textContent = 'OCR…';
+    statusBadge.textContent = revCount > 0 ? ('OCR · ⚠ ' + revCount) : 'OCR…';
+    statusBadge.title = '';
+  } else if (revCount > 0) {
+    statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200';
+    statusBadge.textContent = '⚠ ' + revCount + ' <90%';
+    statusBadge.title = revCount + ' bubble(s) below 90% OCR confidence — click to review';
+  } else if (page.status === 'done' || page.ocrCompleted) {
+    statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800';
+    statusBadge.textContent = 'Extracted';
+    statusBadge.title = '';
   } else if (page.boxesDetected) {
     statusBadge.className = page.blocks.length > 0
       ? 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200'
       : 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200';
     statusBadge.textContent = page.blocks.length + (page.blocks.length === 1 ? ' box' : ' boxes');
+    statusBadge.title = '';
   } else {
     statusBadge.className = 'px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600';
     statusBadge.textContent = 'Ready';
+    statusBadge.title = '';
   }
 }
 
@@ -299,7 +307,11 @@ function renderPageList() {
       if (targetIdx >= 0 && state.selectedPageId !== page.id) {
         goToPageIndex(targetIdx, { animateSlide: false, scrollSidebar: false });
       }
-      quickExtractSinglePage(page);
+      if (typeof activateSelectTextOnPageDoubleClick === 'function') {
+        activateSelectTextOnPageDoubleClick(page, null);
+      } else if (!isPageAlreadyExtracted(page)) {
+        quickExtractSinglePage(page);
+      }
     });
 
     if (state.filterReviewPagesOnly && countPageReviewBlocks(page) === 0) {
@@ -392,8 +404,11 @@ async function ocrSingleBlockById(page, blockId) {
     const im = await loadImageElement(page.url);
     const res = await recognizeSingleBlock(im, blk);
     blk.text = res.text;
-    blk.charConf = res.charConf;
+    blk.charConf = normalizeConf01(res.charConf);
+    blk.ocrAttempted = true;
+    blk.verified = false;
     page.status = 'done';
+    page.ocrCompleted = true;
     updatePageFullText(page);
     setProgress(false);
     showToast('Updated bubble #' + (idx + 1));
@@ -487,13 +502,19 @@ function goToPageIndex(targetIdx, opts) {
   const dir = prevIdx >= 0 && targetIdx < prevIdx ? -1 : 1;
   state.selectedPageId = targetPage.id;
   state.selectedBlockId = null;
+  state.livePopupBlockId = null;
+  if (el.liveSelectionCard) el.liveSelectionCard.classList.add('hidden');
 
   syncSelectedPageCardInSidebar(options.scrollSidebar !== false);
   el.viewerViewport.scrollTop = 0;
+  renderActivePageStage();
   if (state.fitMode) {
     el.viewerViewport.scrollLeft = 0;
+  } else if (el.viewerViewport) {
+    el.viewerViewport.scrollLeft = state.readingOrder === 'rtl'
+      ? Math.max(0, el.viewerViewport.scrollWidth - el.viewerViewport.clientWidth)
+      : 0;
   }
-  renderActivePageStage();
   renderRightPanel();
 
   if (options.animateSlide !== false) {
@@ -618,29 +639,175 @@ function fitLiveTextSpans() {
   });
 }
 
-function syncZoomFitUI() {
-  if (!el.btnZoomFit) return;
-  el.btnZoomFit.classList.toggle('is-active', Boolean(state.fitMode));
-  el.btnZoomFit.setAttribute(
-    'data-tip',
-    state.fitMode ? 'Fit to Screen (Active)' : 'Fit to Screen (' + Math.round(state.zoom * 100) + '%)'
+const ZOOM_MIN_FACTOR = 0.35;
+const ZOOM_MAX_FACTOR = 5.0;
+const ZOOM_STEP_RATIO = 1.25;
+
+function getFitBaseWidth(page) {
+  if (!page || !page.width || !page.height) return 800;
+  if (!el.viewerViewport) return page.width;
+  const cs = window.getComputedStyle(el.viewerViewport);
+  const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+  const rawVpW = el.viewerViewport.clientWidth || window.innerWidth || 960;
+  const winH = window.innerHeight || document.documentElement.clientHeight || 800;
+  const rawVpH = el.viewerViewport.clientHeight || (state.isViewerFullscreen ? winH : Math.max(240, winH - 165));
+  const availW = Math.max(120, rawVpW - padX);
+  const maxCssH = state.isViewerFullscreen
+    ? Math.max(120, Math.min(rawVpH > 40 ? rawVpH - padY : winH - 20, winH - 20))
+    : Math.max(120, Math.min(rawVpH > 40 ? rawVpH - padY : winH - 205, winH - 205));
+  const fitByHeightW = maxCssH * (page.width / page.height);
+  if (state.isViewerFullscreen) {
+    return Math.max(120, Math.min(availW, fitByHeightW));
+  }
+  return Math.max(120, Math.min(page.width, availW, fitByHeightW));
+}
+
+function isViewportZoomOverflowing() {
+  if (!el.viewerViewport || state.fitMode) return false;
+  return (
+    el.viewerViewport.scrollWidth > el.viewerViewport.clientWidth + 4 ||
+    el.viewerViewport.scrollHeight > el.viewerViewport.clientHeight + 4
   );
+}
+
+function syncViewportGrabCursor() {
+  if (!el.viewerViewport) return;
+  const canPan = !state.drawMode && Boolean(getSelectedPage()) && isViewportZoomOverflowing();
+  el.viewerViewport.classList.toggle('can-grab-pan', canPan);
+}
+
+function syncZoomFitUI() {
+  const isFit = Boolean(state.fitMode);
+  const pct = Math.round((isFit ? 1.0 : state.zoom) * 100);
+  const atMin = !isFit && state.zoom <= ZOOM_MIN_FACTOR + 0.001;
+  const atMax = !isFit && state.zoom >= ZOOM_MAX_FACTOR - 0.001;
+
+  if (el.btnZoomFit) {
+    el.btnZoomFit.classList.toggle('is-active', isFit);
+    el.btnZoomFit.setAttribute(
+      'data-tip',
+      isFit ? 'Fit to Screen (Active · 100%)' : 'Reset to Fit (' + pct + '%)'
+    );
+  }
+  if (el.btnZoomOut) el.btnZoomOut.disabled = atMin;
+  if (el.btnZoomIn) el.btnZoomIn.disabled = atMax;
+
+  if (el.btnFsZoomFit) {
+    el.btnFsZoomFit.classList.toggle('is-active', isFit);
+    el.btnFsZoomFit.textContent = isFit ? 'Fit' : (pct + '%');
+    el.btnFsZoomFit.title = isFit
+      ? 'Fit to Screen active (Shortcut: 0)'
+      : ('Zoom ' + pct + '% — Click or press 0 to Fit Screen');
+  }
+  if (el.btnFsZoomOut) el.btnFsZoomOut.disabled = atMin;
+  if (el.btnFsZoomIn) el.btnFsZoomIn.disabled = atMax;
 }
 
 function applyStageZoom(page) {
   syncZoomFitUI();
-  if (!page) return;
+  if (!page || !el.activePageImage || !el.stageImageWrapper) return;
+
   if (state.fitMode) {
-    el.activePageImage.style.width = '';
-    el.activePageImage.style.maxHeight = state.isViewerFullscreen ? 'calc(100vh - 20px)' : 'calc(100vh - 205px)';
+    state.zoom = 1.0;
+    el.stageImageWrapper.classList.remove('is-zoomed');
+    el.activePageImage.classList.remove('is-zoomed');
+    el.activePageImage.style.maxWidth = '100%';
+    if (state.isViewerFullscreen) {
+      const fitW = Math.round(getFitBaseWidth(page));
+      el.activePageImage.style.width = fitW + 'px';
+      el.activePageImage.style.maxHeight = 'calc(100dvh - 20px)';
+    } else {
+      el.activePageImage.style.width = '';
+      el.activePageImage.style.maxHeight = 'calc(100vh - 205px)';
+    }
   } else {
-    const targetW = Math.round(page.width * state.zoom);
+    const baseW = getFitBaseWidth(page);
+    const targetW = Math.max(120, Math.round(baseW * state.zoom));
+    el.stageImageWrapper.classList.add('is-zoomed');
+    el.activePageImage.classList.add('is-zoomed');
+    el.activePageImage.style.maxWidth = 'none';
     el.activePageImage.style.maxHeight = 'none';
     el.activePageImage.style.width = targetW + 'px';
   }
-  if (state.liveTextMode) {
-    requestAnimationFrame(fitLiveTextSpans);
+
+  syncViewportGrabCursor();
+  requestAnimationFrame(() => {
+    syncViewportGrabCursor();
+    if (state.liveTextMode) {
+      fitLiveTextSpans();
+      if (state.livePopupBlockId && typeof positionOpenLivePopup === 'function') {
+        positionOpenLivePopup();
+      }
+    }
+  });
+}
+
+function setStageZoomFactor(nextFactor, anchorClientX, anchorClientY) {
+  const page = getSelectedPage();
+  if (!page || !el.viewerViewport || !el.activePageImage) return;
+
+  const clamped = Math.max(ZOOM_MIN_FACTOR, Math.min(ZOOM_MAX_FACTOR, +Number(nextFactor).toFixed(4)));
+  const vp = el.viewerViewport;
+  const vpRectBefore = vp.getBoundingClientRect();
+  const imgRectBefore = el.activePageImage.getBoundingClientRect();
+
+  const clientX = (typeof anchorClientX === 'number' && Number.isFinite(anchorClientX))
+    ? anchorClientX
+    : (vpRectBefore.left + vp.clientWidth * 0.5);
+  const clientY = (typeof anchorClientY === 'number' && Number.isFinite(anchorClientY))
+    ? anchorClientY
+    : (vpRectBefore.top + vp.clientHeight * 0.5);
+
+  const prevW = Math.max(1, imgRectBefore.width);
+  const prevH = Math.max(1, imgRectBefore.height);
+  const relX = Math.max(0, Math.min(1, (clientX - imgRectBefore.left) / prevW));
+  const relY = Math.max(0, Math.min(1, (clientY - imgRectBefore.top) / prevH));
+  const cursorOffsetVpX = clientX - vpRectBefore.left;
+  const cursorOffsetVpY = clientY - vpRectBefore.top;
+
+  state.fitMode = false;
+  state.zoom = clamped;
+  applyStageZoom(page);
+
+  const vpRectAfter = vp.getBoundingClientRect();
+  const imgRectAfter = el.activePageImage.getBoundingClientRect();
+  const newPointClientX = imgRectAfter.left + relX * imgRectAfter.width;
+  const newPointClientY = imgRectAfter.top + relY * imgRectAfter.height;
+  const deltaScrollX = newPointClientX - (vpRectAfter.left + cursorOffsetVpX);
+  const deltaScrollY = newPointClientY - (vpRectAfter.top + cursorOffsetVpY);
+
+  vp.scrollLeft = Math.max(0, vp.scrollLeft + deltaScrollX);
+  vp.scrollTop = Math.max(0, vp.scrollTop + deltaScrollY);
+  syncViewportGrabCursor();
+}
+
+function stepStageZoom(stepDir, anchorClientX, anchorClientY) {
+  const page = getSelectedPage();
+  if (!page) return;
+  let cur = state.fitMode ? 1.0 : state.zoom;
+  if (state.fitMode && el.activePageImage) {
+    const renderedW = el.activePageImage.getBoundingClientRect().width;
+    const baseW = getFitBaseWidth(page);
+    if (renderedW > 20 && baseW > 20) {
+      cur = renderedW / baseW;
+    }
   }
+  const ratio = stepDir >= 0 ? ZOOM_STEP_RATIO : (1 / ZOOM_STEP_RATIO);
+  const next = cur * ratio;
+  setStageZoomFactor(next, anchorClientX, anchorClientY);
+}
+
+function resetStageZoomToFit() {
+  const page = getSelectedPage();
+  state.fitMode = true;
+  state.zoom = 1.0;
+  applyStageZoom(page);
+  if (el.viewerViewport) {
+    el.viewerViewport.scrollTop = 0;
+    el.viewerViewport.scrollLeft = 0;
+  }
+  syncViewportGrabCursor();
 }
 
 // Interactive Box Move & 8-Way Resize State
@@ -672,15 +839,15 @@ function renderOverlayBoxes() {
     }
     (page.blocks || []).forEach((blk, idx) => {
       const txt = (blk.text || '').trim();
-      if (!txt) return;
+      const isHighlighted = state.livePopupBlockId === blk.id || state.selectedBlockId === blk.id;
+      if (!txt && !isHighlighted) return;
       const reg = document.createElement('div');
-      const isPopupOpen = state.livePopupBlockId === blk.id;
       const needsReview = isBlockBelowReviewThreshold(blk, page);
-      const confPct = typeof blk.charConf === 'number' ? Math.round(blk.charConf * 100) : null;
+      const confPct = formatOcrConfPercent(blk.charConf);
       reg.className =
         'live-text-region' +
         (needsReview ? ' is-low-conf' : '') +
-        (isPopupOpen ? ' has-selection' : '');
+        (isHighlighted ? ' has-selection' : '');
       reg.setAttribute('data-live-text', '1');
       reg.setAttribute('data-bbox-id', blk.id);
       reg.title = needsReview
@@ -690,7 +857,7 @@ function renderOverlayBoxes() {
 
       reg.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        if (!state.liveTextMode) return;
+        if (!state.liveTextMode || !txt) return;
         if (typeof openLiveBubblePopup === 'function') {
           openLiveBubblePopup(blk.id);
         }
@@ -710,7 +877,7 @@ function renderOverlayBoxes() {
     const isSelected = blk.id === state.selectedBlockId;
     const isOcrActive = state.activeOcrBlockIds.has(blk.id);
     const needsReview = isBlockBelowReviewThreshold(blk, page);
-    const confPct = typeof blk.charConf === 'number' ? Math.round(blk.charConf * 100) : null;
+    const confPct = formatOcrConfPercent(blk.charConf);
     const div = document.createElement('div');
     div.setAttribute('data-bbox-id', blk.id);
     div.className =
@@ -786,30 +953,36 @@ function renderOverlayBoxes() {
       div.appendChild(qbar);
     }
 
-    // Start Move or Resize on Pointer Down
+    // Start Move or Resize on Pointer Down (preserve synthetic click/dblclick unless dragging or resizing)
     div.addEventListener('pointerdown', (ev) => {
       if (state.drawMode || state.isExtracting || ev.button !== 0) return;
       ev.stopPropagation();
-      ev.preventDefault();
-      el.viewerViewport.focus({ preventScroll: true });
-
       const handleEl = ev.target.closest('[data-resize-dir]');
       const resizeDir = handleEl ? handleEl.getAttribute('data-resize-dir') : null;
+      if (resizeDir) {
+        ev.preventDefault();
+      }
+      el.viewerViewport.focus({ preventScroll: true });
 
-      if (state.selectedBlockId !== blk.id) {
+      const wasAlreadySelected = state.selectedBlockId === blk.id;
+      if (!wasAlreadySelected) {
         state.selectedBlockId = blk.id;
         syncToolbarBoxDeleteBtn();
       }
 
       const stageRect = el.stageImageWrapper.getBoundingClientRect();
-      div.setPointerCapture(ev.pointerId);
-      div.classList.add('dragging');
+      if (resizeDir) {
+        try { div.setPointerCapture(ev.pointerId); } catch (_e) {}
+        div.classList.add('dragging');
+      }
 
       boxManip = {
         pointerId: ev.pointerId,
         divEl: div,
         page,
         blk,
+        wasAlreadySelected,
+        captured: Boolean(resizeDir),
         mode: resizeDir ? 'resize' : 'move',
         dir: resizeDir,
         startClientX: ev.clientX,
@@ -830,6 +1003,11 @@ function renderOverlayBoxes() {
       const dyClient = ev.clientY - boxManip.startClientY;
       if (!boxManip.moved && Math.hypot(dxClient, dyClient) < 3) return;
       boxManip.moved = true;
+      if (!boxManip.captured) {
+        try { div.setPointerCapture(ev.pointerId); } catch (_e) {}
+        div.classList.add('dragging');
+        boxManip.captured = true;
+      }
 
       const dxImg = (dxClient / boxManip.stageW) * boxManip.page.width;
       const dyImg = (dyClient / boxManip.stageH) * boxManip.page.height;
@@ -868,10 +1046,14 @@ function renderOverlayBoxes() {
     const finishBoxManip = (ev) => {
       if (!boxManip || boxManip.pointerId !== ev.pointerId) return;
       const wasMoved = boxManip.moved;
+      const wasAlreadySelected = boxManip.wasAlreadySelected;
       boxManip.divEl.classList.remove('dragging');
       boxManip = null;
 
-      renderOverlayBoxes();
+      // Avoid tearing down the DOM node on a stationary click if already selected so native dblclick fires on the same element
+      if (wasMoved || !wasAlreadySelected) {
+        renderOverlayBoxes();
+      }
       if (!wasMoved) {
         if (state.activeTab !== 'bubbles') {
           setActiveTab('bubbles');
@@ -879,7 +1061,7 @@ function renderOverlayBoxes() {
           renderRightPanel();
         }
         const cardEl = el.panelPageBubbles.querySelector('[data-block-card="' + blk.id + '"]');
-        if (cardEl) cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        if (cardEl) scrollCardIntoContainer(el.panelPageBubbles, cardEl);
       } else {
         renderRightPanel();
       }
@@ -892,20 +1074,143 @@ function renderOverlayBoxes() {
   });
 }
 
-function buildCombinedMangaTranscript() {
+function buildCombinedMangaTranscriptWithRanges() {
   const chunks = [];
-  state.pages.forEach((page, idx) => {
-    const lines = (page.blocks || [])
-      .map((b) => (b.text || '').trim())
-      .filter((t) => t.length > 0);
-    if (lines.length === 0) return;
-    if (state.includeHeaders) {
-      chunks.push('=== Page ' + (idx + 1) + ' (' + page.name + ') ===\n' + lines.join('\n'));
-    } else {
-      chunks.push(lines.join('\n'));
+  const ranges = [];
+  let cursor = 0;
+  state.pages.forEach((page, pageIdx) => {
+    const validBlocks = (page.blocks || [])
+      .map((blk, blkIdx) => ({ blk, blkIdx, text: (blk.text || '').trim() }))
+      .filter((item) => item.text.length > 0);
+    if (validBlocks.length === 0) return;
+
+    if (chunks.length > 0) {
+      cursor += 2; // '\n\n'
     }
+    let chunkStr = '';
+    if (state.includeHeaders) {
+      const hdr = '=== Page ' + (pageIdx + 1) + ' (' + page.name + ') ===\n';
+      chunkStr += hdr;
+      cursor += hdr.length;
+    }
+    validBlocks.forEach((item, idxInPage) => {
+      if (idxInPage > 0) {
+        chunkStr += '\n';
+        cursor += 1;
+      }
+      const start = cursor;
+      const end = cursor + item.text.length;
+      ranges.push({ start, end, pageIdx, page, blk: item.blk, blkIdx: item.blkIdx });
+      chunkStr += item.text;
+      cursor = end;
+    });
+    chunks.push(chunkStr);
   });
-  return chunks.join('\n\n');
+  return { text: chunks.join('\n\n'), ranges };
+}
+
+function buildCombinedMangaTranscript() {
+  return buildCombinedMangaTranscriptWithRanges().text;
+}
+
+function findTranscriptBlockAtOffset(startOffset, endOffset) {
+  const { ranges } = buildCombinedMangaTranscriptWithRanges();
+  if (ranges.length === 0) return null;
+  const s = Math.max(0, Number(startOffset) || 0);
+  const e = Math.max(s, Number(endOffset) || s);
+  for (const r of ranges) {
+    if (e > s) {
+      if (s < r.end && e > r.start) return r;
+    } else if (s >= r.start && s <= r.end) {
+      return r;
+    }
+  }
+  return null;
+}
+
+function getPageBubbleCardClassName(isSelected, needsReview) {
+  return (
+    'rounded-md border p-2.5 transition cursor-pointer ' +
+    (needsReview
+      ? (isSelected
+          ? 'md-bubble-card-selected border-2 border-amber-500 bg-amber-50/80 ring-2 ring-rose-300 shadow-sm'
+          : 'border-2 border-amber-400 bg-amber-50/65 hover:border-amber-500 shadow-sm')
+      : (isSelected
+          ? 'md-bubble-card-selected border-2 border-rose-400 bg-rose-50/40 shadow-sm'
+          : 'border-slate-200 bg-slate-50/50 hover:border-slate-300'))
+  );
+}
+
+function getPageBubblePillClassName(isSelected, needsReview) {
+  return (
+    'inline-flex items-center justify-center min-w-[22px] h-5 px-1.5 rounded-full text-[11px] font-bold text-white ' +
+    (isSelected ? 'bg-rose-600' : (needsReview ? 'bg-amber-600' : 'bg-indigo-600'))
+  );
+}
+
+function scrollCardIntoContainer(container, cardEl) {
+  if (!container || !cardEl) return;
+  const cRect = container.getBoundingClientRect();
+  const elRect = cardEl.getBoundingClientRect();
+  if (cRect.height <= 0) return;
+  if (elRect.top < cRect.top + 8) {
+    container.scrollTo({
+      top: Math.max(0, container.scrollTop + (elRect.top - cRect.top) - 10),
+      behavior: 'smooth'
+    });
+  } else if (elRect.bottom > cRect.bottom - 8) {
+    container.scrollTo({
+      top: Math.max(0, container.scrollTop + (elRect.bottom - cRect.bottom) + 10),
+      behavior: 'smooth'
+    });
+  }
+}
+
+function syncSelectedBubbleCardInPlace(selectedId, opts) {
+  const options = opts || {};
+  if (el.panelPageBubbles) {
+    let activeBubbleCard = null;
+    el.panelPageBubbles.querySelectorAll('[data-block-card]').forEach((card) => {
+      const id = card.getAttribute('data-block-card');
+      const isSel = Boolean(selectedId && id === selectedId);
+      const needsRev = card.getAttribute('data-needs-review') === '1';
+      card.setAttribute('data-selected', isSel ? 'true' : 'false');
+      card.className = getPageBubbleCardClassName(isSel, needsRev);
+      const pill = card.querySelector('[data-bubble-pill]');
+      if (pill) {
+        pill.className = getPageBubblePillClassName(isSel, needsRev);
+      }
+      if (isSel) activeBubbleCard = card;
+    });
+    if (activeBubbleCard && options.scrollCard !== false) {
+      scrollCardIntoContainer(el.panelPageBubbles, activeBubbleCard);
+    }
+  }
+  if (el.panelReviewQueue) {
+    let activeRevCard = null;
+    el.panelReviewQueue.querySelectorAll('[data-block-card]').forEach((card) => {
+      const id = card.getAttribute('data-block-card');
+      const isSel = Boolean(selectedId && id === selectedId);
+      card.setAttribute('data-selected', isSel ? 'true' : 'false');
+      card.className =
+        'rounded-md border p-2.5 transition cursor-pointer ' +
+        (isSel
+          ? 'md-bubble-card-selected border-2 border-amber-500 bg-amber-50/80 shadow-sm'
+          : 'border-amber-300 bg-amber-50/35 hover:border-amber-400');
+      const jumpBtn = card.querySelector('[data-review-jump-pill]');
+      if (jumpBtn) {
+        jumpBtn.className =
+          'inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium transition ' +
+          (isSel
+            ? 'bg-rose-600 text-white'
+            : 'bg-white border border-amber-300 text-slate-800 hover:bg-amber-100');
+      }
+      if (isSel) activeRevCard = card;
+    });
+    if (activeRevCard && options.scrollReviewCard === true) {
+      scrollCardIntoContainer(el.panelReviewQueue, activeRevCard);
+    }
+  }
 }
 
 const reviewThumbImageCache = new Map();
@@ -917,13 +1222,28 @@ function collectAllLowConfidenceItems() {
     page.blocks.forEach((blk, blkIdx) => {
       if (isBlockBelowReviewThreshold(blk, page)) {
         const hasTxt = Boolean((blk.text || '').trim());
-        const confPct = typeof blk.charConf === 'number' && blk.charConf > 0
-          ? Math.round(blk.charConf * 100)
-          : null;
-        items.push({ page, pageIdx, blk, blkIdx, confPct, isEmpty: !hasTxt });
+        const normC = normalizeConf01(blk.charConf);
+        const confPct = formatOcrConfPercent(blk.charConf);
+        items.push({
+          page,
+          pageIdx,
+          blk,
+          blkIdx,
+          rawConf: normC !== null ? normC : (hasTxt ? 0.5 : -1),
+          confPct: hasTxt ? confPct : (confPct !== null && confPct > 0 ? confPct : null),
+          isEmpty: !hasTxt
+        });
       }
     });
   });
+  return items;
+}
+
+function getOrderedReviewItems(baseItems) {
+  const items = Array.isArray(baseItems) ? baseItems : collectAllLowConfidenceItems();
+  if (state.reviewSortMode === 'conf') {
+    return [...items].sort((a, b) => (a.rawConf - b.rawConf) || (a.pageIdx - b.pageIdx) || (a.blkIdx - b.blkIdx));
+  }
   return items;
 }
 
@@ -950,9 +1270,11 @@ function focusBlockOnStage(pageIdx, blockId, opts) {
     goToPageIndex(pageIdx, { animateSlide: options.animateSlide !== false });
   }
   state.selectedBlockId = blockId;
+  syncToolbarBoxDeleteBtn();
   if (state.liveTextMode) {
+    renderOverlayBoxes();
     if (typeof openLiveBubblePopup === 'function') {
-      openLiveBubblePopup(blockId);
+      openLiveBubblePopup(blockId, { preserveTab: true, skipRightRender: true });
     }
   } else {
     state.showBoxes = true;
@@ -964,31 +1286,56 @@ function focusBlockOnStage(pageIdx, blockId, opts) {
   }
   if (options.skipRightRender !== true) {
     renderRightPanel();
+  } else {
+    syncSelectedBubbleCardInPlace(blockId, { scrollCard: false });
+  }
+}
+
+function openReviewAndFocusFirst() {
+  const ordered = getOrderedReviewItems();
+  state.reviewQueuePageId = null;
+  if (state.activeTab !== 'review') {
+    state.activeTab = 'review';
+    syncTabBarClasses();
+  }
+  if (ordered.length > 0) {
+    const curPageIdx = Math.max(0, state.pages.findIndex((p) => p.id === state.selectedPageId));
+    const onCurPage = ordered.find((it) => it.pageIdx === curPageIdx);
+    const target = onCurPage || ordered[0];
+    focusBlockOnStage(target.pageIdx, target.blk.id);
+    setTimeout(() => {
+      if (!el.panelReviewQueue) return;
+      const cardEl = el.panelReviewQueue.querySelector('[data-block-card="' + target.blk.id + '"]');
+      if (cardEl) cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 30);
+  } else {
+    renderRightPanel();
   }
 }
 
 function jumpToLowConfidenceByStep(stepDir) {
-  const allItems = collectAllLowConfidenceItems();
-  if (allItems.length === 0) {
+  const ordered = getOrderedReviewItems();
+  if (ordered.length === 0) {
     showToast('All extracted bubbles are ≥90% confidence or verified!');
     return false;
   }
+  const pool = state.reviewQueuePageId
+    ? ordered.filter((it) => it.page.id === state.reviewQueuePageId)
+    : ordered;
+  const activeList = pool.length > 0 ? pool : ordered;
   const dir = stepDir < 0 ? -1 : 1;
-  const curIdx = allItems.findIndex(
+  const curIdx = activeList.findIndex(
     (it) => it.page.id === state.selectedPageId && it.blk.id === state.selectedBlockId
   );
   let nextItem = null;
   if (curIdx >= 0) {
-    const nextPos = (curIdx + dir + allItems.length) % allItems.length;
-    nextItem = allItems[nextPos];
+    const nextPos = (curIdx + dir + activeList.length) % activeList.length;
+    nextItem = activeList[nextPos];
   } else {
     const curPageIdx = Math.max(0, state.pages.findIndex((p) => p.id === state.selectedPageId));
     nextItem = dir > 0
-      ? (allItems.find((it) => it.pageIdx >= curPageIdx) || allItems[0])
-      : ([...allItems].reverse().find((it) => it.pageIdx <= curPageIdx) || allItems[allItems.length - 1]);
-  }
-  if (state.reviewQueuePageId && state.reviewQueuePageId !== nextItem.page.id) {
-    state.reviewQueuePageId = null;
+      ? (activeList.find((it) => it.pageIdx >= curPageIdx) || activeList[0])
+      : ([...activeList].reverse().find((it) => it.pageIdx <= curPageIdx) || activeList[activeList.length - 1]);
   }
   if (state.activeTab !== 'review' && state.activeTab !== 'bubbles') {
     state.activeTab = 'review';
@@ -1010,8 +1357,8 @@ function jumpToNextLowConfidenceBubble() {
 
 function drawBubbleCropPreview(canvasEl, page, blk) {
   if (!canvasEl || !page || !blk) return;
-  const W = 72;
-  const H = 64;
+  const W = 96;
+  const H = 76;
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   canvasEl.width = Math.round(W * dpr);
   canvasEl.height = Math.round(H * dpr);
@@ -1021,10 +1368,15 @@ function drawBubbleCropPreview(canvasEl, page, blk) {
   ctx.fillRect(0, 0, W, H);
 
   const paintFromImg = (im) => {
-    const sx = Math.max(0, blk.x1);
-    const sy = Math.max(0, blk.y1);
-    const sw = Math.max(1, Math.min((im.naturalWidth || page.width) - sx, blk.x2 - blk.x1));
-    const sh = Math.max(1, Math.min((im.naturalHeight || page.height) - sy, blk.y2 - blk.y1));
+    const imgW = im.naturalWidth || page.width || 1;
+    const imgH = im.naturalHeight || page.height || 1;
+    const pad = 10;
+    const sx = Math.max(0, blk.x1 - pad);
+    const sy = Math.max(0, blk.y1 - pad);
+    const ex = Math.min(imgW, blk.x2 + pad);
+    const ey = Math.min(imgH, blk.y2 + pad);
+    const sw = Math.max(1, ex - sx);
+    const sh = Math.max(1, ey - sy);
     const scale = Math.min((W - 6) / sw, (H - 6) / sh);
     const dw = Math.max(1, sw * scale);
     const dh = Math.max(1, sh * scale);
@@ -1035,6 +1387,15 @@ function drawBubbleCropPreview(canvasEl, page, blk) {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(im, sx, sy, sw, sh, dx, dy, dw, dh);
+
+    // Subtle amber crop frame showing exact detected bubble bounds inside context margin
+    const bx = dx + (blk.x1 - sx) * scale;
+    const by = dy + (blk.y1 - sy) * scale;
+    const bw = Math.max(2, (blk.x2 - blk.x1) * scale);
+    const bh = Math.max(2, (blk.y2 - blk.y1) * scale);
+    ctx.strokeStyle = 'rgba(227, 116, 0, 0.55)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx, by, bw, bh);
   };
 
   if (
@@ -1060,23 +1421,34 @@ function drawBubbleCropPreview(canvasEl, page, blk) {
   im.src = page.url;
 }
 
-function advanceAfterResolvingReviewItem(anchorPageIdx) {
-  const remaining = collectAllLowConfidenceItems();
-  if (remaining.length === 0) {
+function advanceAfterResolvingReviewItem(anchorPageIdx, focusTextarea) {
+  const ordered = getOrderedReviewItems();
+  if (ordered.length === 0) {
     state.selectedBlockId = null;
     state.reviewQueuePageId = null;
     renderAll();
     showToast('All <90% OCR bubbles reviewed!');
     return;
   }
-  if (state.reviewQueuePageId && !remaining.some((it) => it.page.id === state.reviewQueuePageId)) {
+  if (state.reviewQueuePageId && !ordered.some((it) => it.page.id === state.reviewQueuePageId)) {
     state.reviewQueuePageId = null;
   }
   const pool = state.reviewQueuePageId
-    ? remaining.filter((it) => it.page.id === state.reviewQueuePageId)
-    : remaining;
-  const nextIt = pool.find((it) => it.pageIdx >= anchorPageIdx) || pool[0];
+    ? ordered.filter((it) => it.page.id === state.reviewQueuePageId)
+    : ordered;
+  const nextIt = state.reviewSortMode === 'conf'
+    ? pool[0]
+    : (pool.find((it) => it.pageIdx >= anchorPageIdx) || pool[0]);
   focusBlockOnStage(nextIt.pageIdx, nextIt.blk.id);
+  if (focusTextarea && state.activeTab === 'review' && el.panelReviewQueue) {
+    requestAnimationFrame(() => {
+      const nextTa = el.panelReviewQueue.querySelector('[data-block-card="' + nextIt.blk.id + '"] textarea');
+      if (nextTa) {
+        nextTa.focus();
+        nextTa.setSelectionRange(nextTa.value.length, nextTa.value.length);
+      }
+    });
+  }
 }
 
 function renderReviewQueuePanel(allReviewItems) {
@@ -1085,7 +1457,9 @@ function renderReviewQueuePanel(allReviewItems) {
   el.panelReviewQueue.innerHTML = '';
 
   const totalCount = allReviewItems.length;
-  const anyExtracted = state.pages.some((p) => p.status === 'done' || (p.blocks || []).some((b) => Boolean((b.text || '').trim())));
+  const anyExtracted = state.pages.some(
+    (p) => p.status === 'done' || p.ocrCompleted || (p.blocks || []).some((b) => b.ocrAttempted || Boolean((b.text || '').trim()))
+  );
 
   if (totalCount === 0) {
     const emptyBox = document.createElement('div');
@@ -1107,7 +1481,7 @@ function renderReviewQueuePanel(allReviewItems) {
     return;
   }
 
-  // Group counts per page for quick page jump chips
+  // Group counts per page for quick page jump chips & page headers
   const pageGroups = [];
   const seenPageIds = new Map();
   allReviewItems.forEach((it) => {
@@ -1123,27 +1497,56 @@ function renderReviewQueuePanel(allReviewItems) {
     state.reviewQueuePageId = null;
   }
 
+  const orderedAll = getOrderedReviewItems(allReviewItems);
   const filteredItems = state.reviewQueuePageId
-    ? allReviewItems.filter((it) => it.page.id === state.reviewQueuePageId)
-    : allReviewItems;
+    ? orderedAll.filter((it) => it.page.id === state.reviewQueuePageId)
+    : orderedAll;
 
-  const activePos = allReviewItems.findIndex(
+  const activePos = filteredItems.findIndex(
     (it) => it.page.id === state.selectedPageId && it.blk.id === state.selectedBlockId
   );
   const emptyItems = allReviewItems.filter((it) => it.isEmpty);
 
-  // Sticky Top Review Navigation & Batch Bar
+  // Sticky Top Review Navigation, Sort & Batch Bar
   const stickyHeader = document.createElement('div');
   stickyHeader.className = 'md-review-sticky-bar space-y-2';
 
   const topRow = document.createElement('div');
-  topRow.className = 'flex flex-wrap items-center justify-between gap-2';
+  topRow.className = 'flex flex-wrap items-center justify-between gap-1.5';
+
+  const leftMeta = document.createElement('div');
+  leftMeta.className = 'flex items-center gap-1.5';
 
   const summaryLabel = document.createElement('span');
-  summaryLabel.className = 'text-xs font-medium text-amber-900';
-  summaryLabel.textContent = totalCount + (totalCount === 1 ? ' bubble' : ' bubbles') +
-    ' <90% · ' + pageGroups.length + (pageGroups.length === 1 ? ' page' : ' pages');
-  topRow.appendChild(summaryLabel);
+  summaryLabel.className = 'text-xs font-semibold text-amber-900 tabular-nums';
+  summaryLabel.textContent = totalCount + ' <90% · ' + pageGroups.length + (pageGroups.length === 1 ? ' page' : ' pages');
+  leftMeta.appendChild(summaryLabel);
+
+  // Sort Capsule: Page Order vs Lowest % First
+  const sortCap = document.createElement('div');
+  sortCap.className = 'viewer-capsule';
+  const btnSortPage = document.createElement('button');
+  btnSortPage.type = 'button';
+  btnSortPage.className = 'md-review-sort-pill' + (state.reviewSortMode !== 'conf' ? ' is-active' : '');
+  btnSortPage.textContent = 'By Page';
+  btnSortPage.title = 'Order <90% bubbles page-by-page in manga reading order';
+  btnSortPage.addEventListener('click', () => {
+    state.reviewSortMode = 'page';
+    renderRightPanel();
+  });
+  const btnSortConf = document.createElement('button');
+  btnSortConf.type = 'button';
+  btnSortConf.className = 'md-review-sort-pill' + (state.reviewSortMode === 'conf' ? ' is-active' : '');
+  btnSortConf.textContent = 'Lowest %';
+  btnSortConf.title = 'Order lowest OCR confidence bubbles first across all pages';
+  btnSortConf.addEventListener('click', () => {
+    state.reviewSortMode = 'conf';
+    renderRightPanel();
+  });
+  sortCap.appendChild(btnSortPage);
+  sortCap.appendChild(btnSortConf);
+  leftMeta.appendChild(sortCap);
+  topRow.appendChild(leftMeta);
 
   const navRight = document.createElement('div');
   navRight.className = 'flex items-center gap-1.5 ml-auto';
@@ -1175,18 +1578,18 @@ function renderReviewQueuePanel(allReviewItems) {
   btnPrevRev.type = 'button';
   btnPrevRev.className = 'px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100 rounded';
   btnPrevRev.textContent = '← Prev';
-  btnPrevRev.title = 'Jump to previous <90% OCR bubble';
+  btnPrevRev.title = 'Jump to previous <90% OCR bubble (Shortcut: P)';
   btnPrevRev.addEventListener('click', () => jumpToLowConfidenceByStep(-1));
 
   const stepPos = document.createElement('span');
-  stepPos.className = 'px-2 text-[11px] font-medium text-slate-600 tabular-nums select-none';
-  stepPos.textContent = (activePos >= 0 ? (activePos + 1) : '–') + ' / ' + totalCount;
+  stepPos.className = 'px-1.5 text-[11px] font-medium text-slate-600 tabular-nums select-none';
+  stepPos.textContent = (activePos >= 0 ? (activePos + 1) : '–') + '/' + filteredItems.length;
 
   const btnNextRev = document.createElement('button');
   btnNextRev.type = 'button';
   btnNextRev.className = 'px-2 py-0.5 text-[11px] font-medium text-indigo-700 hover:bg-indigo-50 rounded';
   btnNextRev.textContent = 'Next →';
-  btnNextRev.title = 'Jump to next <90% OCR bubble';
+  btnNextRev.title = 'Jump to next <90% OCR bubble (Shortcut: N)';
   btnNextRev.addEventListener('click', () => jumpToLowConfidenceByStep(1));
 
   stepper.appendChild(btnPrevRev);
@@ -1196,14 +1599,14 @@ function renderReviewQueuePanel(allReviewItems) {
   topRow.appendChild(navRight);
   stickyHeader.appendChild(topRow);
 
-  // Page Quick-Jump Filter Chips Row
+  // Page Quick-Jump & Filter Chips Row
   const chipsRow = document.createElement('div');
   chipsRow.className = 'flex items-center gap-1.5 overflow-x-auto custom-scroll pb-0.5';
 
   const allChip = document.createElement('button');
   allChip.type = 'button';
   allChip.className = 'md-review-page-chip' + (!state.reviewQueuePageId ? ' is-active' : '');
-  allChip.textContent = 'All (' + totalCount + ')';
+  allChip.textContent = 'All Pages (' + totalCount + ')';
   allChip.addEventListener('click', () => {
     state.reviewQueuePageId = null;
     renderRightPanel();
@@ -1216,7 +1619,7 @@ function renderReviewQueuePanel(allReviewItems) {
     const isAct = state.reviewQueuePageId === g.page.id;
     pChip.className = 'md-review-page-chip' + (isAct ? ' is-active' : '');
     pChip.textContent = 'P.' + (g.pageIdx + 1) + ' (' + g.count + ')';
-    pChip.title = 'Jump to Page ' + (g.pageIdx + 1) + ' (' + g.page.name + ')';
+    pChip.title = 'Jump to Page ' + (g.pageIdx + 1) + ' (' + g.page.name + ') — click again to show all pages';
     pChip.addEventListener('click', () => {
       state.reviewQueuePageId = isAct ? null : g.page.id;
       focusBlockOnStage(g.pageIdx, g.firstBlkId);
@@ -1226,16 +1629,64 @@ function renderReviewQueuePanel(allReviewItems) {
   stickyHeader.appendChild(chipsRow);
   el.panelReviewQueue.appendChild(stickyHeader);
 
-  // Render Each <90% Review Card with Live Manga Bubble Crop + Inline Edit + 1-Click Verify / Delete
+  // Render Each <90% Review Card (with Page Section Dividers in 'By Page' mode)
+  let lastRenderedPageId = null;
   filteredItems.forEach((it) => {
+    if (state.reviewSortMode !== 'conf' && it.page.id !== lastRenderedPageId) {
+      lastRenderedPageId = it.page.id;
+      const pGroup = seenPageIds.get(it.page.id);
+      const groupBar = document.createElement('div');
+      groupBar.className = 'md-review-page-group';
+
+      const pTitleBtn = document.createElement('button');
+      pTitleBtn.type = 'button';
+      pTitleBtn.className = 'text-left text-xs font-medium text-slate-800 hover:underline truncate min-w-0';
+      pTitleBtn.textContent = 'Page ' + (it.pageIdx + 1) + ' · ' + it.page.name + ' (' + (pGroup ? pGroup.count : 1) + ')';
+      pTitleBtn.title = 'Jump viewer to Page ' + (it.pageIdx + 1);
+      pTitleBtn.addEventListener('click', () => {
+        focusBlockOnStage(it.pageIdx, it.blk.id);
+      });
+
+      const btnVerifyPage = document.createElement('button');
+      btnVerifyPage.type = 'button';
+      btnVerifyPage.className = 'md-btn-text px-2 py-0.5 rounded text-[11px] font-medium shrink-0';
+      btnVerifyPage.textContent = '✓ Verify Page';
+      btnVerifyPage.title = 'Mark all <90% bubbles with text on Page ' + (it.pageIdx + 1) + ' as verified';
+      btnVerifyPage.addEventListener('click', () => {
+        let verifiedN = 0;
+        (it.page.blocks || []).forEach((b) => {
+          if (isBlockBelowReviewThreshold(b, it.page) && Boolean((b.text || '').trim())) {
+            b.verified = true;
+            verifiedN++;
+          }
+        });
+        if (verifiedN > 0) {
+          updatePageCardInPlace(it.page);
+          advanceAfterResolvingReviewItem(it.pageIdx, false);
+          showToast('Verified ' + verifiedN + ' bubble(s) on Page ' + (it.pageIdx + 1) + '!');
+        }
+      });
+
+      groupBar.appendChild(pTitleBtn);
+      groupBar.appendChild(btnVerifyPage);
+      el.panelReviewQueue.appendChild(groupBar);
+    }
+
     const isSel = it.page.id === state.selectedPageId && it.blk.id === state.selectedBlockId;
     const card = document.createElement('div');
     card.setAttribute('data-block-card', it.blk.id);
+    card.setAttribute('data-selected', isSel ? 'true' : 'false');
     card.className =
-      'rounded-md border p-2.5 transition ' +
+      'rounded-md border p-2.5 transition cursor-pointer ' +
       (isSel
-        ? 'border-2 border-amber-500 bg-amber-50/80 shadow-sm'
+        ? 'md-bubble-card-selected border-2 border-amber-500 bg-amber-50/80 shadow-sm'
         : 'border-amber-300 bg-amber-50/35 hover:border-amber-400');
+
+    // Clicking anywhere on the card body (outside buttons/textarea) jumps directly to that page & bubble
+    card.addEventListener('click', (ev) => {
+      if (ev.target.closest('button, textarea')) return;
+      focusBlockOnStage(it.pageIdx, it.blk.id);
+    });
 
     const topBar = document.createElement('div');
     topBar.className = 'flex flex-wrap items-center justify-between gap-1.5 mb-2';
@@ -1245,12 +1696,13 @@ function renderReviewQueuePanel(allReviewItems) {
 
     const jumpBtn = document.createElement('button');
     jumpBtn.type = 'button';
+    jumpBtn.setAttribute('data-review-jump-pill', '1');
     jumpBtn.className =
       'inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium transition ' +
       (isSel
         ? 'bg-rose-600 text-white'
         : 'bg-white border border-amber-300 text-slate-800 hover:bg-amber-100');
-    jumpBtn.textContent = 'Page ' + (it.pageIdx + 1) + ' · #' + (it.blkIdx + 1);
+    jumpBtn.textContent = 'P.' + (it.pageIdx + 1) + ' · #' + (it.blkIdx + 1);
     jumpBtn.title = 'Jump to Page ' + (it.pageIdx + 1) + ', Bubble #' + (it.blkIdx + 1) + ' on the manga viewer';
     jumpBtn.addEventListener('click', () => {
       focusBlockOnStage(it.pageIdx, it.blk.id);
@@ -1258,7 +1710,9 @@ function renderReviewQueuePanel(allReviewItems) {
 
     const confTag = document.createElement('span');
     confTag.className = 'px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-200/80 text-amber-950 border border-amber-400 tabular-nums';
-    confTag.textContent = it.confPct !== null ? (it.confPct + '% OCR') : 'Empty OCR';
+    confTag.textContent = it.confPct !== null
+      ? (it.confPct + '% OCR')
+      : (it.isEmpty ? 'Empty OCR' : '<90% OCR');
 
     locLeft.appendChild(jumpBtn);
     locLeft.appendChild(confTag);
@@ -1274,7 +1728,7 @@ function renderReviewQueuePanel(allReviewItems) {
     btnKeep.addEventListener('click', () => {
       it.blk.verified = true;
       updatePageCardInPlace(it.page);
-      advanceAfterResolvingReviewItem(it.pageIdx);
+      advanceAfterResolvingReviewItem(it.pageIdx, false);
     });
 
     const btnReOcr = document.createElement('button');
@@ -1293,13 +1747,13 @@ function renderReviewQueuePanel(allReviewItems) {
     btnDel.disabled = state.isExtracting;
     btnDel.className = 'md-popup-del-btn';
     btnDel.textContent = 'Delete';
-    btnDel.title = 'Delete this false or unwanted bounding box and jump to next <90% bubble';
+    btnDel.title = 'Delete this false or unwanted bounding box and jump to next <90% bubble (Alt+Backspace in text box)';
     btnDel.addEventListener('click', () => {
       if (state.isExtracting) return;
       it.page.blocks = it.page.blocks.filter((b) => b.id !== it.blk.id);
       updatePageFullText(it.page);
       updatePageCardInPlace(it.page);
-      advanceAfterResolvingReviewItem(it.pageIdx);
+      advanceAfterResolvingReviewItem(it.pageIdx, false);
     });
 
     actRight.appendChild(btnKeep);
@@ -1343,7 +1797,14 @@ function renderReviewQueuePanel(allReviewItems) {
         ev.preventDefault();
         it.blk.verified = true;
         updatePageCardInPlace(it.page);
-        advanceAfterResolvingReviewItem(it.pageIdx);
+        advanceAfterResolvingReviewItem(it.pageIdx, true);
+      } else if (ev.altKey && (ev.key === 'Backspace' || ev.key === 'Delete')) {
+        ev.preventDefault();
+        if (state.isExtracting) return;
+        it.page.blocks = it.page.blocks.filter((b) => b.id !== it.blk.id);
+        updatePageFullText(it.page);
+        updatePageCardInPlace(it.page);
+        advanceAfterResolvingReviewItem(it.pageIdx, true);
       }
     });
 
@@ -1356,6 +1817,654 @@ function renderReviewQueuePanel(allReviewItems) {
   el.panelReviewQueue.scrollTop = prevScroll;
 }
 
+
+function syncSavedVocabIndicatorsInPlace() {
+  const totalSaved = Array.isArray(state.savedVocab) ? state.savedVocab.length : 0;
+  if (el.savedVocabCountBadge) {
+    el.savedVocabCountBadge.textContent = String(totalSaved);
+    el.savedVocabCountBadge.className = totalSaved > 0
+      ? 'px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-600 text-white tabular-nums leading-none'
+      : 'px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600 tabular-nums leading-none';
+  }
+
+  document.querySelectorAll('[data-vocab-save-key]').forEach((btn) => {
+    const key = btn.getAttribute('data-vocab-save-key') || '';
+    const saved = Boolean(key && state.savedVocab.some((it) => normalizeVocabMatchKey(it) === key));
+    btn.classList.toggle('is-saved', saved);
+    btn.setAttribute('aria-pressed', saved ? 'true' : 'false');
+    btn.textContent = saved ? '✓ Saved' : '+ Save';
+    btn.title = saved
+      ? 'Saved to your Anki Vocabulary list — click to remove'
+      : 'Save this vocabulary word for review & Anki deck export';
+  });
+
+  document.querySelectorAll('[data-vocab-save-all-keys]').forEach((btn) => {
+    const rawKeys = (btn.getAttribute('data-vocab-save-all-keys') || '').split('|').filter(Boolean);
+    if (rawKeys.length === 0) return;
+    const allSaved = rawKeys.every((k) => state.savedVocab.some((it) => normalizeVocabMatchKey(it) === k));
+    btn.classList.toggle('is-saved', allSaved);
+    btn.textContent = allSaved ? '✓ All Saved' : ('+ Save All (' + rawKeys.length + ')');
+  });
+}
+
+function renderSavedVocabPanel() {
+  if (!el.panelSavedVocab) return;
+  const prevScroll = el.panelSavedVocab.scrollTop;
+  el.panelSavedVocab.innerHTML = '';
+
+  const totalSaved = state.savedVocab.length;
+
+  // Sticky Header: Segmented View Switcher (Saved List | Review Cards) + Add/Clear + Anki Deck Card Generator
+  const sticky = document.createElement('div');
+  sticky.className = 'md-vocab-sticky-bar space-y-2';
+
+  const topRow = document.createElement('div');
+  topRow.className = 'flex flex-wrap items-center justify-between gap-1.5';
+
+  const modeGroup = document.createElement('div');
+  modeGroup.className = 'inline-flex items-center rounded-md border border-slate-200 p-0.5 bg-slate-50/70';
+
+  const btnListMode = document.createElement('button');
+  btnListMode.type = 'button';
+  btnListMode.setAttribute('data-vocab-mode-btn', 'list');
+  btnListMode.className = 'md-review-sort-pill ' + (state.vocabViewMode === 'list' ? 'is-active' : '');
+  btnListMode.textContent = 'Saved List (' + totalSaved + ')';
+  btnListMode.addEventListener('click', () => {
+    state.vocabViewMode = 'list';
+    renderSavedVocabPanel();
+  });
+
+  const btnCardsMode = document.createElement('button');
+  btnCardsMode.type = 'button';
+  btnCardsMode.setAttribute('data-vocab-mode-btn', 'cards');
+  btnCardsMode.className = 'md-review-sort-pill ' + (state.vocabViewMode === 'cards' ? 'is-active' : '');
+  btnCardsMode.textContent = 'Review Cards';
+  btnCardsMode.disabled = totalSaved === 0;
+  btnCardsMode.title = 'Practice your saved words as Anki flashcards (Front: Kanji -> Back: Romaji & Meaning)';
+  btnCardsMode.addEventListener('click', () => {
+    state.vocabViewMode = 'cards';
+    state.vocabCardFlipped = false;
+    if (state.vocabCardIndex >= state.savedVocab.length) state.vocabCardIndex = 0;
+    renderSavedVocabPanel();
+  });
+
+  modeGroup.appendChild(btnListMode);
+  modeGroup.appendChild(btnCardsMode);
+
+  const rightBtns = document.createElement('div');
+  rightBtns.className = 'flex items-center gap-1';
+
+  const btnAddToggle = document.createElement('button');
+  btnAddToggle.type = 'button';
+  btnAddToggle.setAttribute('data-vocab-add-toggle', '1');
+  btnAddToggle.className = 'md-btn-outlined px-2 py-0.5 rounded text-[11px] font-medium transition';
+  btnAddToggle.textContent = state.vocabShowAddForm ? 'Cancel' : '+ Add Word';
+  btnAddToggle.addEventListener('click', () => {
+    state.vocabShowAddForm = !state.vocabShowAddForm;
+    state.vocabConfirmClear = false;
+    if (state.vocabShowAddForm) state.vocabViewMode = 'list';
+    renderSavedVocabPanel();
+  });
+  rightBtns.appendChild(btnAddToggle);
+
+  if (totalSaved > 0) {
+    const btnClear = document.createElement('button');
+    btnClear.type = 'button';
+    btnClear.className = state.vocabConfirmClear
+      ? 'px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-600 text-white hover:bg-rose-700 transition'
+      : 'md-btn-text px-2 py-0.5 rounded text-[11px] font-medium text-slate-500 hover:text-rose-600 transition';
+    btnClear.textContent = state.vocabConfirmClear ? 'Confirm Clear?' : 'Clear';
+    btnClear.addEventListener('click', () => {
+      if (!state.vocabConfirmClear) {
+        state.vocabConfirmClear = true;
+        renderSavedVocabPanel();
+        return;
+      }
+      state.savedVocab = [];
+      state.vocabConfirmClear = false;
+      state.vocabEditingId = null;
+      state.vocabCardIndex = 0;
+      state.vocabCardFlipped = false;
+      state.vocabViewMode = 'list';
+      persistSavedVocabState();
+      notifySavedVocabChanged();
+      showToast('Cleared saved vocabulary list.');
+    });
+    rightBtns.appendChild(btnClear);
+  }
+
+  topRow.appendChild(modeGroup);
+  topRow.appendChild(rightBtns);
+  sticky.appendChild(topRow);
+
+  // Anki Deck Card Generator Box (Front: Kanji | Back: Romaji + Meaning)
+  const deckBox = document.createElement('div');
+  deckBox.className = 'md-vocab-deck-box space-y-1.5';
+
+  const deckMetaRow = document.createElement('div');
+  deckMetaRow.className = 'flex flex-wrap items-center justify-between gap-1 text-[11px]';
+  const specLabel = document.createElement('span');
+  specLabel.className = 'font-medium text-slate-700';
+  specLabel.textContent = 'Anki Deck · Front: Kanji | Back: Romaji + Meaning';
+  deckMetaRow.appendChild(specLabel);
+  deckBox.appendChild(deckMetaRow);
+
+  const exportRow = document.createElement('div');
+  exportRow.className = 'flex flex-wrap items-center gap-1.5';
+
+  const deckInput = document.createElement('input');
+  deckInput.type = 'text';
+  deckInput.value = state.vocabDeckName || 'AnkiSuru Manga Vocabulary';
+  deckInput.placeholder = 'Anki deck name…';
+  deckInput.setAttribute('aria-label', 'Anki deck name');
+  deckInput.className = 'md-vocab-input flex-1 min-w-[130px]';
+  deckInput.addEventListener('input', () => {
+    state.vocabDeckName = deckInput.value;
+    persistSavedVocabState();
+  });
+
+  const btnExportApkg = document.createElement('button');
+  btnExportApkg.type = 'button';
+  btnExportApkg.setAttribute('data-export-anki-apkg', '1');
+  btnExportApkg.disabled = totalSaved === 0 || state.isExportingAnki;
+  btnExportApkg.className = 'md-btn-filled px-2.5 py-1 rounded text-[11px] font-medium transition disabled:opacity-45 shrink-0';
+  btnExportApkg.textContent = state.isExportingAnki
+    ? 'Building…'
+    : ('Generate Anki Deck (.apkg)');
+  btnExportApkg.title = 'Download native Anki .apkg deck with Kanji on the front card and Romaji + Meaning on the back card';
+  btnExportApkg.addEventListener('click', () => {
+    exportSavedVocabAsAnkiApkg();
+  });
+
+  const btnExportTxt = document.createElement('button');
+  btnExportTxt.type = 'button';
+  btnExportTxt.setAttribute('data-export-anki-txt', '1');
+  btnExportTxt.disabled = totalSaved === 0;
+  btnExportTxt.className = 'md-btn-outlined px-2 py-1 rounded text-[11px] font-medium transition disabled:opacity-45 shrink-0';
+  btnExportTxt.textContent = 'Anki .txt';
+  btnExportTxt.title = 'Download Anki tab-separated text import file (Front: Kanji, Back: Romaji + Meaning)';
+  btnExportTxt.addEventListener('click', () => {
+    exportSavedVocabAsAnkiTxt();
+  });
+
+  exportRow.appendChild(deckInput);
+  exportRow.appendChild(btnExportApkg);
+  exportRow.appendChild(btnExportTxt);
+  deckBox.appendChild(exportRow);
+  sticky.appendChild(deckBox);
+
+  // Inline "+ Add Word" Quick Form
+  if (state.vocabShowAddForm) {
+    const addForm = document.createElement('form');
+    addForm.className = 'rounded-lg border border-indigo-200 bg-indigo-50/50 p-2.5 space-y-2 text-xs';
+    addForm.setAttribute('data-vocab-add-form', '1');
+
+    const title = document.createElement('div');
+    title.className = 'text-[11px] font-semibold text-indigo-900';
+    title.textContent = 'Add Custom Vocabulary Card';
+    addForm.appendChild(title);
+
+    const grid = document.createElement('div');
+    grid.className = 'grid grid-cols-1 sm:grid-cols-2 gap-1.5';
+
+    const inKanji = document.createElement('input');
+    inKanji.type = 'text';
+    inKanji.placeholder = 'Front: Kanji / Word (e.g. 放課後)';
+    inKanji.className = 'md-vocab-input jp-text';
+    inKanji.setAttribute('data-add-vocab-kanji', '1');
+
+    const inRomaji = document.createElement('input');
+    inRomaji.type = 'text';
+    inRomaji.placeholder = 'Back: Romaji (auto-filled)';
+    inRomaji.className = 'md-vocab-input';
+    inRomaji.setAttribute('data-add-vocab-romaji', '1');
+
+    let romajiManuallyEdited = false;
+    inRomaji.addEventListener('input', () => {
+      romajiManuallyEdited = Boolean(inRomaji.value.trim());
+    });
+    inKanji.addEventListener('input', () => {
+      if (!romajiManuallyEdited) {
+        inRomaji.value = computeInstantWordRomaji(inKanji.value, '');
+      }
+    });
+
+    grid.appendChild(inKanji);
+    grid.appendChild(inRomaji);
+    addForm.appendChild(grid);
+
+    const inMeaning = document.createElement('input');
+    inMeaning.type = 'text';
+    inMeaning.placeholder = 'Back: English meaning (e.g. after school)';
+    inMeaning.className = 'md-vocab-input';
+    inMeaning.setAttribute('data-add-vocab-meaning', '1');
+    addForm.appendChild(inMeaning);
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'flex items-center justify-end gap-1.5';
+    const btnSaveNew = document.createElement('button');
+    btnSaveNew.type = 'submit';
+    btnSaveNew.className = 'md-btn-filled px-3 py-1 rounded text-[11px] font-medium';
+    btnSaveNew.textContent = 'Save Vocabulary';
+    btnRow.appendChild(btnSaveNew);
+    addForm.appendChild(btnRow);
+
+    addForm.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const k = inKanji.value.trim();
+      if (!k) {
+        showToast('Enter a Japanese word / Kanji for the front card.', 'warn');
+        inKanji.focus();
+        return;
+      }
+      const r = inRomaji.value.trim() || computeInstantWordRomaji(k, '');
+      const m = inMeaning.value.trim();
+      const page = getSelectedPage();
+      const rec = buildSavedVocabRecord(
+        { kanji: k, romaji: r, meaning: m },
+        { pageId: page ? page.id : null, pageName: page ? page.name : '' }
+      );
+      state.savedVocab.push(rec);
+      state.vocabShowAddForm = false;
+      persistSavedVocabState();
+      notifySavedVocabChanged();
+      showToast('Added "' + rec.kanji + '" to Saved Vocabulary!');
+    });
+
+    sticky.appendChild(addForm);
+  }
+
+  el.panelSavedVocab.appendChild(sticky);
+
+  // Empty State
+  if (totalSaved === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'rounded-lg border border-dashed border-slate-300 p-6 text-center space-y-2 mt-2';
+    const h = document.createElement('p');
+    h.className = 'text-xs font-semibold text-slate-700';
+    h.textContent = 'No vocabulary saved yet';
+    const sub = document.createElement('p');
+    sub.className = 'text-[11px] text-slate-500 leading-relaxed';
+    sub.textContent = 'Open Vocab & Grammar on any speech bubble (in Page Bubbles or the Select Text popup) and click "+ Save" next to any word, highlight a word in Select Text popup, or click "+ Add Word" above.';
+    empty.appendChild(h);
+    empty.appendChild(sub);
+    el.panelSavedVocab.appendChild(empty);
+    return;
+  }
+
+  // Mode B: Interactive Anki Flashcard Review / Flip Preview
+  if (state.vocabViewMode === 'cards') {
+    const idx = Math.max(0, Math.min(totalSaved - 1, state.vocabCardIndex || 0));
+    state.vocabCardIndex = idx;
+    const item = state.savedVocab[idx];
+    const flipped = Boolean(state.vocabCardFlipped);
+
+    const cardWrap = document.createElement('div');
+    cardWrap.className = 'space-y-2.5 pt-1';
+
+    const metaTop = document.createElement('div');
+    metaTop.className = 'flex items-center justify-between text-xs text-slate-500 px-0.5';
+    const counter = document.createElement('span');
+    counter.className = 'font-semibold tabular-nums text-slate-700';
+    counter.textContent = 'Card ' + (idx + 1) + ' of ' + totalSaved;
+
+    const btnShuffle = document.createElement('button');
+    btnShuffle.type = 'button';
+    btnShuffle.className = 'md-btn-text px-2 py-0.5 rounded text-[11px] font-medium text-indigo-600';
+    btnShuffle.textContent = 'Shuffle Order';
+    btnShuffle.addEventListener('click', () => {
+      for (let i = state.savedVocab.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = state.savedVocab[i];
+        state.savedVocab[i] = state.savedVocab[j];
+        state.savedVocab[j] = tmp;
+      }
+      state.vocabCardIndex = 0;
+      state.vocabCardFlipped = false;
+      persistSavedVocabState();
+      renderSavedVocabPanel();
+    });
+
+    metaTop.appendChild(counter);
+    metaTop.appendChild(btnShuffle);
+    cardWrap.appendChild(metaTop);
+
+    const flashcard = document.createElement('div');
+    flashcard.className = 'md-vocab-flashcard';
+    flashcard.setAttribute('data-vocab-flashcard', '1');
+    flashcard.setAttribute('tabindex', '0');
+    flashcard.setAttribute('role', 'button');
+    flashcard.setAttribute('aria-label', flipped ? 'Back of Anki card — click to flip to front' : 'Front of Anki card — click to reveal Romaji and Meaning');
+
+    const sideBadge = document.createElement('span');
+    sideBadge.className = flipped
+      ? 'px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-800'
+      : 'px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-indigo-100 text-indigo-800';
+    sideBadge.textContent = flipped ? 'Back · Romaji & Meaning' : 'Front · Kanji';
+    flashcard.appendChild(sideBadge);
+
+    const centerContent = document.createElement('div');
+    centerContent.className = 'w-full py-3 space-y-2';
+
+    const kanjiEl = document.createElement('div');
+    kanjiEl.className = 'jp-text font-bold text-slate-900 ' + (flipped ? 'text-2xl' : 'text-3xl py-4');
+    kanjiEl.textContent = item.kanji || '';
+    centerContent.appendChild(kanjiEl);
+
+    if (flipped) {
+      const hr = document.createElement('hr');
+      hr.className = 'md-vocab-card-divider';
+      centerContent.appendChild(hr);
+
+      const romEl = document.createElement('div');
+      romEl.setAttribute('data-flashcard-romaji', '1');
+      romEl.className = 'text-base font-semibold text-indigo-700';
+      romEl.textContent = item.romaji || computeInstantWordRomaji(item.kanji, item.reading) || '—';
+      centerContent.appendChild(romEl);
+
+      const meanEl = document.createElement('div');
+      meanEl.setAttribute('data-flashcard-meaning', '1');
+      meanEl.className = 'text-sm font-medium text-slate-800 max-w-sm mx-auto leading-snug';
+      meanEl.textContent = item.meaning || '(No meaning entered yet)';
+      centerContent.appendChild(meanEl);
+
+      if (item.reading && item.reading !== item.kanji) {
+        const rdEl = document.createElement('div');
+        rdEl.className = 'jp-text text-xs text-slate-500 pt-0.5';
+        rdEl.textContent = 'Reading: ' + item.reading + (item.pos ? ' · ' + item.pos : '');
+        centerContent.appendChild(rdEl);
+      }
+    }
+
+    flashcard.appendChild(centerContent);
+
+    const hintEl = document.createElement('span');
+    hintEl.className = 'text-[11px] text-slate-400';
+    hintEl.textContent = flipped
+      ? 'Click card or press Space to flip back to Kanji'
+      : 'Click card or press Space to reveal Romaji & Meaning';
+    flashcard.appendChild(hintEl);
+
+    flashcard.addEventListener('click', () => {
+      state.vocabCardFlipped = !state.vocabCardFlipped;
+      renderSavedVocabPanel();
+    });
+    flashcard.addEventListener('keydown', (ev) => {
+      if (ev.key === ' ' || ev.key === 'Enter') {
+        ev.preventDefault();
+        state.vocabCardFlipped = !state.vocabCardFlipped;
+        renderSavedVocabPanel();
+      }
+    });
+
+    cardWrap.appendChild(flashcard);
+
+    const navRow = document.createElement('div');
+    navRow.className = 'flex items-center justify-between gap-2';
+
+    const btnPrevCard = document.createElement('button');
+    btnPrevCard.type = 'button';
+    btnPrevCard.disabled = idx <= 0;
+    btnPrevCard.className = 'md-btn-outlined px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40';
+    btnPrevCard.textContent = '← Prev';
+    btnPrevCard.addEventListener('click', () => {
+      if (state.vocabCardIndex > 0) {
+        state.vocabCardIndex--;
+        state.vocabCardFlipped = false;
+        renderSavedVocabPanel();
+      }
+    });
+
+    const btnFlipCard = document.createElement('button');
+    btnFlipCard.type = 'button';
+    btnFlipCard.setAttribute('data-vocab-flip-btn', '1');
+    btnFlipCard.className = 'md-btn-filled flex-1 py-1.5 rounded text-xs font-medium';
+    btnFlipCard.textContent = flipped ? 'Show Front (Kanji)' : 'Flip Card (Romaji & Meaning)';
+    btnFlipCard.addEventListener('click', () => {
+      state.vocabCardFlipped = !state.vocabCardFlipped;
+      renderSavedVocabPanel();
+    });
+
+    const btnNextCard = document.createElement('button');
+    btnNextCard.type = 'button';
+    btnNextCard.disabled = idx >= totalSaved - 1;
+    btnNextCard.className = 'md-btn-outlined px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40';
+    btnNextCard.textContent = 'Next →';
+    btnNextCard.addEventListener('click', () => {
+      if (state.vocabCardIndex < totalSaved - 1) {
+        state.vocabCardIndex++;
+        state.vocabCardFlipped = false;
+        renderSavedVocabPanel();
+      }
+    });
+
+    navRow.appendChild(btnPrevCard);
+    navRow.appendChild(btnFlipCard);
+    navRow.appendChild(btnNextCard);
+    cardWrap.appendChild(navRow);
+
+    el.panelSavedVocab.appendChild(cardWrap);
+    el.panelSavedVocab.scrollTop = prevScroll;
+    return;
+  }
+
+  // Mode A: Saved Vocabulary List, Search & Inline Editor
+  if (totalSaved > 2) {
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.value = state.vocabSearchQuery || '';
+    searchInput.placeholder = 'Filter saved kanji, romaji, or meaning…';
+    searchInput.className = 'md-vocab-input';
+    searchInput.addEventListener('input', () => {
+      state.vocabSearchQuery = searchInput.value;
+      renderSavedVocabPanel();
+      const nextSearch = el.panelSavedVocab.querySelector('input[type="search"]');
+      if (nextSearch) {
+        nextSearch.focus();
+        const len = nextSearch.value.length;
+        try { nextSearch.setSelectionRange(len, len); } catch (_e) {}
+      }
+    });
+    el.panelSavedVocab.appendChild(searchInput);
+  }
+
+  const q = (state.vocabSearchQuery || '').trim().toLowerCase();
+  const filtered = q
+    ? state.savedVocab.filter((it) =>
+        (it.kanji || '').toLowerCase().includes(q) ||
+        (it.reading || '').toLowerCase().includes(q) ||
+        (it.romaji || '').toLowerCase().includes(q) ||
+        (it.meaning || '').toLowerCase().includes(q)
+      )
+    : state.savedVocab;
+
+  if (filtered.length === 0) {
+    const noHit = document.createElement('p');
+    noHit.className = 'text-xs text-slate-400 text-center py-6';
+    noHit.textContent = 'No saved vocabulary matches "' + state.vocabSearchQuery + '".';
+    el.panelSavedVocab.appendChild(noHit);
+    return;
+  }
+
+  const listWrap = document.createElement('div');
+  listWrap.className = 'space-y-2 pb-2';
+
+  filtered.forEach((item, idx) => {
+    const isEditing = state.vocabEditingId === item.id;
+    const card = document.createElement('div');
+    card.className = 'md-vocab-item-card space-y-1.5';
+    card.setAttribute('data-saved-vocab-card', item.id);
+
+    const head = document.createElement('div');
+    head.className = 'flex flex-wrap items-center justify-between gap-1.5';
+
+    const wordWrap = document.createElement('div');
+    wordWrap.className = 'flex flex-wrap items-baseline gap-1.5 min-w-0';
+
+    const numSpan = document.createElement('span');
+    numSpan.className = 'text-[10px] font-semibold text-slate-400 tabular-nums';
+    numSpan.textContent = '#' + (idx + 1);
+    wordWrap.appendChild(numSpan);
+
+    const kanjiSpan = document.createElement('span');
+    kanjiSpan.className = 'jp-text text-sm font-bold text-slate-900';
+    kanjiSpan.textContent = item.kanji;
+    wordWrap.appendChild(kanjiSpan);
+
+    if (item.reading && item.reading !== item.kanji) {
+      const readSpan = document.createElement('span');
+      readSpan.className = 'jp-text text-[11px] font-medium text-indigo-700';
+      readSpan.textContent = '【' + item.reading + '】';
+      wordWrap.appendChild(readSpan);
+    }
+
+    if (item.pos) {
+      const posSpan = document.createElement('span');
+      posSpan.className = 'px-1.5 py-0.2 rounded bg-emerald-100/80 text-emerald-900 text-[10px] font-semibold';
+      posSpan.textContent = item.pos;
+      wordWrap.appendChild(posSpan);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'flex items-center gap-1 ml-auto shrink-0';
+
+    if (item.pageId && state.pages.some((p) => p.id === item.pageId)) {
+      const pIdx = state.pages.findIndex((p) => p.id === item.pageId);
+      const btnJump = document.createElement('button');
+      btnJump.type = 'button';
+      btnJump.className = 'px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 transition';
+      btnJump.textContent = 'P' + (pIdx + 1) + (item.bubbleIndex ? ' · #' + item.bubbleIndex : '');
+      btnJump.title = 'Jump to source manga page & bubble';
+      btnJump.addEventListener('click', () => {
+        if (item.blockId && typeof focusBlockOnStage === 'function') {
+          focusBlockOnStage(pIdx, item.blockId, { skipRightRender: true });
+        } else {
+          goToPageIndex(pIdx, { animateSlide: true });
+        }
+      });
+      actions.appendChild(btnJump);
+    }
+
+    const btnPracticeOne = document.createElement('button');
+    btnPracticeOne.type = 'button';
+    btnPracticeOne.className = 'px-1.5 py-0.5 rounded text-[10px] font-medium text-indigo-700 hover:bg-indigo-50 transition';
+    btnPracticeOne.textContent = 'Card';
+    btnPracticeOne.title = 'Preview this word as an Anki flashcard';
+    btnPracticeOne.addEventListener('click', () => {
+      const realIdx = state.savedVocab.findIndex((x) => x.id === item.id);
+      state.vocabCardIndex = Math.max(0, realIdx);
+      state.vocabCardFlipped = false;
+      state.vocabViewMode = 'cards';
+      renderSavedVocabPanel();
+    });
+    actions.appendChild(btnPracticeOne);
+
+    const btnEdit = document.createElement('button');
+    btnEdit.type = 'button';
+    btnEdit.className = 'px-1.5 py-0.5 rounded text-[10px] font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition';
+    btnEdit.textContent = isEditing ? 'Done' : 'Edit';
+    btnEdit.addEventListener('click', () => {
+      state.vocabEditingId = isEditing ? null : item.id;
+      renderSavedVocabPanel();
+    });
+    actions.appendChild(btnEdit);
+
+    const btnDel = document.createElement('button');
+    btnDel.type = 'button';
+    btnDel.setAttribute('data-remove-saved-vocab', item.id);
+    btnDel.className = 'px-1.5 py-0.5 rounded text-[11px] font-medium text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition';
+    btnDel.textContent = '✕';
+    btnDel.title = 'Remove from saved vocabulary';
+    btnDel.addEventListener('click', () => {
+      state.savedVocab = state.savedVocab.filter((x) => x.id !== item.id);
+      if (state.vocabEditingId === item.id) state.vocabEditingId = null;
+      persistSavedVocabState();
+      notifySavedVocabChanged();
+    });
+    actions.appendChild(btnDel);
+
+    head.appendChild(wordWrap);
+    head.appendChild(actions);
+    card.appendChild(head);
+
+    if (isEditing) {
+      const editBox = document.createElement('div');
+      editBox.className = 'grid grid-cols-1 gap-1.5 pt-1 border-t border-slate-100 text-xs';
+
+      const kIn = document.createElement('input');
+      kIn.type = 'text';
+      kIn.value = item.kanji || '';
+      kIn.placeholder = 'Front card (Kanji)';
+      kIn.className = 'md-vocab-input jp-text';
+      kIn.addEventListener('input', () => {
+        item.kanji = kIn.value.trim() || item.kanji;
+        kanjiSpan.textContent = item.kanji;
+        persistSavedVocabState();
+        syncSavedVocabIndicatorsInPlace();
+      });
+
+      const rIn = document.createElement('input');
+      rIn.type = 'text';
+      rIn.value = item.romaji || '';
+      rIn.placeholder = 'Back card (Romaji)';
+      rIn.className = 'md-vocab-input';
+      rIn.addEventListener('input', () => {
+        item.romaji = rIn.value;
+        persistSavedVocabState();
+      });
+
+      const mIn = document.createElement('input');
+      mIn.type = 'text';
+      mIn.value = item.meaning || '';
+      mIn.placeholder = 'Back card (English meaning)';
+      mIn.className = 'md-vocab-input';
+      mIn.addEventListener('input', () => {
+        item.meaning = mIn.value;
+        persistSavedVocabState();
+      });
+
+      editBox.appendChild(kIn);
+      editBox.appendChild(rIn);
+      editBox.appendChild(mIn);
+      card.appendChild(editBox);
+    } else {
+      const backSummary = document.createElement('div');
+      backSummary.className = 'text-xs space-y-0.5';
+
+      const romRow = document.createElement('div');
+      romRow.className = 'flex items-baseline gap-1.5';
+      const romTag = document.createElement('span');
+      romTag.className = 'text-[10px] font-semibold uppercase tracking-wide text-indigo-600 shrink-0';
+      romTag.textContent = 'Romaji';
+      const romTxt = document.createElement('span');
+      romTxt.className = 'italic font-medium text-slate-700';
+      romTxt.textContent = item.romaji || computeInstantWordRomaji(item.kanji, item.reading) || '—';
+      romRow.appendChild(romTag);
+      romRow.appendChild(romTxt);
+
+      const meanRow = document.createElement('div');
+      meanRow.className = 'flex items-baseline gap-1.5';
+      const meanTag = document.createElement('span');
+      meanTag.className = 'text-[10px] font-semibold uppercase tracking-wide text-emerald-700 shrink-0';
+      meanTag.textContent = 'Meaning';
+      const meanTxt = document.createElement('span');
+      meanTxt.className = item.meaning ? 'text-slate-800' : 'text-amber-700 italic';
+      meanTxt.textContent = item.meaning || 'Click Edit to add English meaning';
+      meanRow.appendChild(meanTag);
+      meanRow.appendChild(meanTxt);
+
+      backSummary.appendChild(romRow);
+      backSummary.appendChild(meanRow);
+      card.appendChild(backSummary);
+    }
+
+    listWrap.appendChild(card);
+  });
+
+  el.panelSavedVocab.appendChild(listWrap);
+  el.panelSavedVocab.scrollTop = prevScroll;
+}
+
 function renderRightPanel() {
   const page = getSelectedPage();
   const bubbleCount = page && page.blocks ? page.blocks.length : 0;
@@ -1364,6 +2473,11 @@ function renderRightPanel() {
   const allReviewItems = collectAllLowConfidenceItems();
   const volReviewCount = allReviewItems.length;
   const pageReviewCount = page ? countPageReviewBlocks(page) : 0;
+  const flaggedPageIds = new Set(allReviewItems.map((it) => it.page.id));
+  const flaggedPagesCount = flaggedPageIds.size;
+  const anyExtracted = state.pages.some(
+    (p) => p.status === 'done' || p.ocrCompleted || (p.blocks || []).some((b) => b.ocrAttempted || Boolean((b.text || '').trim()))
+  );
   syncSidebarReviewFilterPill();
 
   if (el.lowConfTabBadge) {
@@ -1371,13 +2485,39 @@ function renderRightPanel() {
     el.lowConfTabBadge.textContent = '⚠ ' + pageReviewCount;
   }
   if (el.reviewQueueCountBadge) {
-    el.reviewQueueCountBadge.textContent = volReviewCount > 0 ? ('⚠ ' + volReviewCount) : '0';
-    el.reviewQueueCountBadge.className = volReviewCount > 0
-      ? 'px-1.5 py-0.2 rounded-full text-[10px] font-semibold bg-amber-500 text-white tabular-nums'
-      : 'px-1.5 py-0.2 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600 tabular-nums';
+    if (volReviewCount > 0) {
+      el.reviewQueueCountBadge.textContent = '⚠ ' + volReviewCount;
+      el.reviewQueueCountBadge.className = 'px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500 text-white tabular-nums leading-none';
+    } else if (anyExtracted) {
+      el.reviewQueueCountBadge.textContent = '✓ 0';
+      el.reviewQueueCountBadge.className = 'px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-800 tabular-nums leading-none';
+    } else {
+      el.reviewQueueCountBadge.textContent = '0';
+      el.reviewQueueCountBadge.className = 'px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600 tabular-nums leading-none';
+    }
+  }
+  if (el.btnToolbarReviewJump) {
+    el.btnToolbarReviewJump.classList.toggle('hidden', volReviewCount === 0);
+    el.btnToolbarReviewJump.textContent = '⚠ ' + volReviewCount + ' <90%';
+    el.btnToolbarReviewJump.title =
+      volReviewCount + ' bubble(s) below 90% OCR across ' + flaggedPagesCount + ' page(s) — click to open Review Queue & jump (Shortcut: R / N)';
+  }
+  if (el.globalReviewBanner) {
+    const showGlobalBanner = volReviewCount > 0 && state.activeTab !== 'review' && state.activeTab !== 'vocab';
+    el.globalReviewBanner.classList.toggle('hidden', !showGlobalBanner);
+    if (el.globalReviewBannerText && volReviewCount > 0) {
+      el.globalReviewBannerText.textContent =
+        '⚠ ' + volReviewCount + (volReviewCount === 1 ? ' bubble' : ' bubbles') +
+        ' <90% OCR across ' + flaggedPagesCount + (flaggedPagesCount === 1 ? ' page' : ' pages');
+    }
+    if (el.btnBannerOpenReview) {
+      el.btnBannerOpenReview.textContent = 'Review All (' + volReviewCount + ')';
+    }
   }
 
   renderReviewQueuePanel(allReviewItems);
+  syncSavedVocabIndicatorsInPlace();
+  renderSavedVocabPanel();
 
   const combined = buildCombinedMangaTranscript();
   el.fullMangaTextarea.value = combined;
@@ -1432,6 +2572,31 @@ function renderRightPanel() {
     }, 40);
   });
 
+  const topRightStudyBtns = document.createElement('div');
+  topRightStudyBtns.className = 'flex flex-wrap items-center gap-1.5 ml-auto';
+
+  const extractedBlocksOnPage = page.blocks.filter((b) => (b.text || '').trim().length > 0);
+  const allPageRomajiOpen = extractedBlocksOnPage.length > 0 && extractedBlocksOnPage.every((b) => Boolean(b.showRomaji));
+
+  const btnTogglePageRomajiAll = document.createElement('button');
+  btnTogglePageRomajiAll.type = 'button';
+  btnTogglePageRomajiAll.disabled = extractedCountOnPage === 0;
+  btnTogglePageRomajiAll.className =
+    'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition disabled:opacity-45 disabled:pointer-events-none ' +
+    (allPageRomajiOpen
+      ? 'border-indigo-300 bg-indigo-100/80 text-indigo-900 hover:bg-indigo-200/70'
+      : 'border-slate-200 bg-white text-slate-700 hover:bg-indigo-50');
+  btnTogglePageRomajiAll.textContent = allPageRomajiOpen ? 'Hide All Romaji' : 'Romaji All';
+  btnTogglePageRomajiAll.title = 'Toggle instant offline Hepburn Romaji across all bubbles on this page (0ms, no API key required)';
+  btnTogglePageRomajiAll.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const nextVal = !allPageRomajiOpen;
+    extractedBlocksOnPage.forEach((b) => {
+      b.showRomaji = nextVal;
+    });
+    renderRightPanel();
+  });
+
   const btnTranslatePageAll = document.createElement('button');
   btnTranslatePageAll.type = 'button';
   btnTranslatePageAll.disabled = extractedCountOnPage === 0 || state.gemini.isTranslatingPage;
@@ -1439,15 +2604,17 @@ function renderRightPanel() {
     'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-45 disabled:pointer-events-none transition shadow-sm';
   btnTranslatePageAll.textContent = state.gemini.isTranslatingPage
     ? 'Translating Page…'
-    : 'Translate Page EN + Romaji (' + extractedCountOnPage + ')';
-  btnTranslatePageAll.title = 'Translate and generate Romaji for all extracted bubbles on this page in one Gemini request';
+    : 'Translate Page to English (' + extractedCountOnPage + ')';
+  btnTranslatePageAll.title = 'Translate all extracted bubbles on this page into English in one Gemini request';
   btnTranslatePageAll.addEventListener('click', (ev) => {
     ev.stopPropagation();
     requestPageBatchTranslation(page);
   });
 
+  topRightStudyBtns.appendChild(btnTogglePageRomajiAll);
+  topRightStudyBtns.appendChild(btnTranslatePageAll);
   studyTopStrip.appendChild(keyBadgeBtn);
-  studyTopStrip.appendChild(btnTranslatePageAll);
+  studyTopStrip.appendChild(topRightStudyBtns);
   el.panelPageBubbles.appendChild(studyTopStrip);
 
   // <90% OCR Confidence Review Strip (Filter + Jump to Next <90% Bubble)
@@ -1513,7 +2680,9 @@ function renderRightPanel() {
   }
 
   const visibleBlocks = state.filterLowConfOnly
-    ? page.blocks.map((blk, idx) => ({ blk, idx })).filter((item) => isBlockBelowReviewThreshold(item.blk, page))
+    ? page.blocks.map((blk, idx) => ({ blk, idx })).filter(
+        (item) => isBlockBelowReviewThreshold(item.blk, page) || item.blk.id === state.selectedBlockId
+      )
     : page.blocks.map((blk, idx) => ({ blk, idx }));
 
   if (visibleBlocks.length === 0 && state.filterLowConfOnly) {
@@ -1528,15 +2697,25 @@ function renderRightPanel() {
     const needsReview = isBlockBelowReviewThreshold(blk, page);
     const card = document.createElement('div');
     card.setAttribute('data-block-card', blk.id);
-    card.className =
-      'rounded-md border p-2.5 transition ' +
-      (needsReview
-        ? (isSelected
-            ? 'border-2 border-amber-500 bg-amber-50/80 ring-2 ring-rose-300 shadow-sm'
-            : 'border-2 border-amber-400 bg-amber-50/65 hover:border-amber-500 shadow-sm')
-        : (isSelected
-            ? 'border-rose-400 bg-rose-50/40 shadow-sm'
-            : 'border-slate-200 bg-slate-50/50 hover:border-slate-300'));
+    card.setAttribute('data-needs-review', needsReview ? '1' : '0');
+    card.setAttribute('data-selected', isSelected ? 'true' : 'false');
+    card.className = getPageBubbleCardClassName(isSelected, needsReview);
+
+    const activateCardSelection = () => {
+      state.selectedBlockId = blk.id;
+      syncToolbarBoxDeleteBtn();
+      if (state.liveTextMode && Boolean((blk.text || '').trim()) && typeof openLiveBubblePopup === 'function') {
+        openLiveBubblePopup(blk.id, { preserveTab: true, skipRightRender: true, skipRightScroll: true });
+      }
+      renderOverlayBoxes();
+      syncSelectedBubbleCardInPlace(blk.id, { scrollCard: false });
+      scrollViewportToBlockIfNeeded(page, blk);
+    };
+
+    card.addEventListener('click', (ev) => {
+      if (ev.target.closest('button, textarea, input, select, a')) return;
+      activateCardSelection();
+    });
 
     const header = document.createElement('div');
     header.className = 'flex items-center justify-between gap-2 mb-1.5';
@@ -1544,37 +2723,35 @@ function renderRightPanel() {
     const leftBadge = document.createElement('div');
     leftBadge.className = 'flex items-center flex-wrap gap-1.5 cursor-pointer';
     const pill = document.createElement('span');
-    pill.className =
-      'inline-flex items-center justify-center min-w-[22px] h-5 px-1.5 rounded-full text-[11px] font-bold text-white ' +
-      (isSelected ? 'bg-rose-600' : (needsReview ? 'bg-amber-600' : 'bg-indigo-600'));
+    pill.setAttribute('data-bubble-pill', '1');
+    pill.className = getPageBubblePillClassName(isSelected, needsReview);
     pill.textContent = '#' + (idx + 1);
 
     const confSpan = document.createElement('span');
+    const dispPct = formatOcrConfPercent(blk.charConf);
     if (blk.verified) {
       confSpan.className = 'px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200';
-      const rawPct = typeof blk.charConf === 'number' && blk.charConf > 0
-        ? ' (' + Math.round(blk.charConf * 100) + '%)'
-        : '';
+      const rawPct = dispPct !== null ? ' (' + dispPct + '%)' : '';
       confSpan.textContent = '✓ Verified' + rawPct;
     } else if (needsReview) {
       confSpan.className = 'px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-amber-200/90 text-amber-950 border border-amber-400';
-      const pctStr = typeof blk.charConf === 'number' && blk.charConf > 0
-        ? Math.round(blk.charConf * 100) + '% OCR'
-        : 'Empty OCR';
+      const hasTxt = Boolean((blk.text || '').trim());
+      const pctStr = dispPct !== null && (hasTxt || dispPct > 0)
+        ? (dispPct + '% OCR')
+        : (hasTxt ? '<90% OCR' : 'Empty OCR');
       confSpan.textContent = '⚠ ' + pctStr + ' · Needs Review (<90%)';
-    } else if (typeof blk.charConf === 'number' && blk.charConf > 0) {
+    } else if (dispPct !== null) {
       confSpan.className = 'px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200';
-      confSpan.textContent = Math.round(blk.charConf * 100) + '% OCR';
+      confSpan.textContent = dispPct + '% OCR';
     } else {
       confSpan.className = 'text-[11px] text-slate-500';
       confSpan.textContent = (blk.x2 - blk.x1) + '×' + (blk.y2 - blk.y1) + ' px';
     }
     leftBadge.appendChild(pill);
     leftBadge.appendChild(confSpan);
-    leftBadge.addEventListener('click', () => {
-      state.selectedBlockId = blk.id;
-      renderOverlayBoxes();
-      renderRightPanel();
+    leftBadge.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      activateCardSelection();
     });
 
     const actions = document.createElement('div');
@@ -1594,9 +2771,11 @@ function renderRightPanel() {
         const im = await loadImageElement(page.url);
         const res = await recognizeSingleBlock(im, blk);
         blk.text = res.text;
-        blk.charConf = res.charConf;
+        blk.charConf = normalizeConf01(res.charConf);
+        blk.ocrAttempted = true;
         blk.verified = false;
         page.status = 'done';
+        page.ocrCompleted = true;
         updatePageFullText(page);
         setProgress(false);
         showToast('Updated bubble #' + (idx + 1));
@@ -1662,32 +2841,48 @@ function renderRightPanel() {
       (needsReview
         ? 'border-amber-400 focus:ring-amber-500'
         : 'border-slate-200 focus:ring-indigo-500');
-    ta.addEventListener('focus', () => {
-      if (state.selectedBlockId !== blk.id) {
-        state.selectedBlockId = blk.id;
-        renderOverlayBoxes();
+    const onBubbleTextareaInteract = () => {
+      const changed = state.selectedBlockId !== blk.id;
+      state.selectedBlockId = blk.id;
+      syncToolbarBoxDeleteBtn();
+      if (state.liveTextMode && state.livePopupBlockId && state.livePopupBlockId !== blk.id) {
+        state.livePopupBlockId = null;
+        if (el.liveSelectionCard) el.liveSelectionCard.classList.add('hidden');
       }
-    });
+      renderOverlayBoxes();
+      syncSelectedBubbleCardInPlace(blk.id, { scrollCard: false });
+      if (changed) {
+        scrollViewportToBlockIfNeeded(page, blk);
+      }
+    };
+    ta.addEventListener('focus', onBubbleTextareaInteract);
+    ta.addEventListener('select', onBubbleTextareaInteract);
+    let inlineRomValEl = null;
     ta.addEventListener('input', () => {
       blk.text = ta.value;
       updatePageFullText(page);
       el.fullMangaTextarea.value = buildCombinedMangaTranscript();
+      if (inlineRomValEl && typeof convertJapaneseToRomajiInstant === 'function') {
+        const nextJp = (blk.text || '').trim();
+        inlineRomValEl.textContent = nextJp ? convertJapaneseToRomajiInstant(nextJp).romaji : '';
+      }
     });
 
     card.appendChild(header);
     card.appendChild(ta);
 
-    // Per-Bubble Gemini Translation, Romaji & Japanese Vocab/Grammar Breakdown Controls
+    // Per-Bubble Instant Offline Romaji, Gemini English Translation & Vocab/Grammar Breakdown Controls
     const jpTrimmed = (blk.text || '').trim();
     const hasExtractedJp = jpTrimmed.length > 0;
     const activeTask = state.gemini.activeTasks.get(blk.id) || null;
     const study = blk.study || null;
     const isStale = Boolean(study && study.sourceText && study.sourceText !== jpTrimmed);
-    const hasTrans = Boolean(study && (study.english || study.romaji));
+    const hasTrans = Boolean(study && study.english);
     const hasBreakdown = Boolean(study && study.breakdown && (
       (Array.isArray(study.breakdown.vocab) && study.breakdown.vocab.length > 0) ||
       (Array.isArray(study.breakdown.grammar) && study.breakdown.grammar.length > 0)
     ));
+    const showInstantRomaji = Boolean(blk.showRomaji) && hasExtractedJp;
 
     const studyBar = document.createElement('div');
     studyBar.className = 'mt-2 flex flex-wrap items-center justify-between gap-1.5';
@@ -1695,27 +2890,46 @@ function renderRightPanel() {
     const leftStudyBtns = document.createElement('div');
     leftStudyBtns.className = 'flex flex-wrap items-center gap-1.5';
 
-    const btnEnRomaji = document.createElement('button');
-    btnEnRomaji.type = 'button';
-    btnEnRomaji.disabled = !hasExtractedJp || Boolean(activeTask);
-    btnEnRomaji.className =
+    const btnInstantRomaji = document.createElement('button');
+    btnInstantRomaji.type = 'button';
+    btnInstantRomaji.disabled = !hasExtractedJp;
+    btnInstantRomaji.setAttribute('data-bubble-romaji-toggle', '1');
+    btnInstantRomaji.setAttribute('aria-pressed', showInstantRomaji ? 'true' : 'false');
+    btnInstantRomaji.className =
+      'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition disabled:opacity-40 disabled:pointer-events-none ' +
+      (showInstantRomaji
+        ? 'border-indigo-300 bg-indigo-100/80 text-indigo-900 hover:bg-indigo-200/70'
+        : 'border-slate-200 bg-white text-slate-700 hover:bg-indigo-50');
+    btnInstantRomaji.textContent = showInstantRomaji ? 'Hide Romaji' : 'Romaji';
+    btnInstantRomaji.title = 'Toggle instant offline Hepburn Romaji for this bubble (0ms, no API key needed)';
+    btnInstantRomaji.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      blk.showRomaji = !blk.showRomaji;
+      renderRightPanel();
+    });
+
+    const btnEnglish = document.createElement('button');
+    btnEnglish.type = 'button';
+    btnEnglish.disabled = !hasExtractedJp || Boolean(activeTask);
+    btnEnglish.setAttribute('data-bubble-english-btn', '1');
+    btnEnglish.className =
       'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition disabled:opacity-40 disabled:pointer-events-none ' +
       (hasTrans && study.showTranslation !== false
         ? 'border-indigo-300 bg-indigo-100/80 text-indigo-900 hover:bg-indigo-200/70'
         : 'border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50');
     if (activeTask === 'translate') {
-      btnEnRomaji.textContent = 'Translating…';
+      btnEnglish.textContent = 'Translating…';
     } else if (hasTrans && !isStale) {
-      btnEnRomaji.textContent = study.showTranslation === false ? 'Show EN + Romaji' : 'Hide EN + Romaji';
+      btnEnglish.textContent = study.showTranslation === false ? 'Show English' : 'Hide English';
     } else {
-      btnEnRomaji.textContent = 'EN + Romaji';
+      btnEnglish.textContent = 'English';
     }
-    btnEnRomaji.title = 'Generate English translation and Hepburn Romaji for this bubble via Gemini API';
-    btnEnRomaji.addEventListener('click', (ev) => {
+    btnEnglish.title = 'Translate this speech bubble into English via Gemini API';
+    btnEnglish.addEventListener('click', (ev) => {
       ev.stopPropagation();
       if (hasTrans && !isStale) {
         blk.study.showTranslation = blk.study.showTranslation === false;
-        renderRightPanel();
+        notifyStudyViewsUpdated(blk.id);
       } else {
         requestBubbleTranslation(page, blk, isStale);
       }
@@ -1741,13 +2955,14 @@ function renderRightPanel() {
       ev.stopPropagation();
       if (hasBreakdown && !isStale) {
         blk.study.showBreakdown = !blk.study.showBreakdown;
-        renderRightPanel();
+        notifyStudyViewsUpdated(blk.id);
       } else {
         requestBubbleBreakdown(page, blk, isStale);
       }
     });
 
-    leftStudyBtns.appendChild(btnEnRomaji);
+    leftStudyBtns.appendChild(btnInstantRomaji);
+    leftStudyBtns.appendChild(btnEnglish);
     leftStudyBtns.appendChild(btnBreakdown);
 
     if (hasTrans || hasBreakdown) {
@@ -1784,60 +2999,80 @@ function renderRightPanel() {
     }
     card.appendChild(studyBar);
 
-    // Render English Translation + Romaji Box
+    // Render Instant Offline Romaji Box (when toggled on for this bubble)
+    if (showInstantRomaji && typeof convertJapaneseToRomajiInstant === 'function') {
+      const romBox = document.createElement('div');
+      romBox.setAttribute('data-bubble-romaji-box', '1');
+      romBox.className = 'mt-2 rounded-lg border border-indigo-200/80 bg-indigo-50/50 px-2.5 py-2 text-xs';
+
+      const romRow = document.createElement('div');
+      romRow.className = 'flex items-start justify-between gap-2';
+      const romTextWrap = document.createElement('div');
+      romTextWrap.className = 'min-w-0 flex-1';
+      const romLabel = document.createElement('span');
+      romLabel.className = 'inline-block text-[10px] font-bold uppercase tracking-wider text-indigo-700 mr-1.5';
+
+      const romRes = convertJapaneseToRomajiInstant(jpTrimmed, () => {
+        if (blk.showRomaji && state.selectedPageId === page.id) {
+          renderRightPanel();
+        }
+      });
+      romLabel.textContent = romRes.ready ? 'Offline Romaji' : 'Offline Romaji…';
+
+      const romVal = document.createElement('span');
+      romVal.className = 'font-medium text-slate-800 break-words';
+      romVal.textContent = romRes.romaji;
+      inlineRomValEl = romVal;
+
+      romTextWrap.appendChild(romLabel);
+      romTextWrap.appendChild(romVal);
+
+      const btnCopyRom = document.createElement('button');
+      btnCopyRom.type = 'button';
+      btnCopyRom.className = 'text-[10px] font-medium text-slate-500 hover:text-indigo-700 shrink-0';
+      btnCopyRom.textContent = 'Copy';
+      btnCopyRom.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        copyTextSafe(romVal.textContent || '', 'Copied Romaji!');
+      });
+
+      romRow.appendChild(romTextWrap);
+      romRow.appendChild(btnCopyRom);
+      romBox.appendChild(romRow);
+      card.appendChild(romBox);
+    }
+
+    // Render English-Only Translation Box
     if (hasTrans && study.showTranslation !== false) {
       const transBox = document.createElement('div');
+      transBox.setAttribute('data-bubble-english-box', '1');
       transBox.className = 'mt-2 rounded-lg border border-indigo-200/80 bg-white p-2.5 space-y-1.5 text-xs';
 
-      if (study.romaji) {
-        const romRow = document.createElement('div');
-        romRow.className = 'flex items-start justify-between gap-2';
-        const romTextWrap = document.createElement('div');
-        romTextWrap.className = 'min-w-0 flex-1';
-        const romLabel = document.createElement('span');
-        romLabel.className = 'inline-block text-[10px] font-bold uppercase tracking-wider text-indigo-600 mr-1.5';
-        romLabel.textContent = 'Romaji';
-        const romVal = document.createElement('span');
-        romVal.className = 'italic text-slate-700 break-words';
-        romVal.textContent = study.romaji;
-        romTextWrap.appendChild(romLabel);
-        romTextWrap.appendChild(romVal);
+      const enRow = document.createElement('div');
+      enRow.className = 'flex items-start justify-between gap-2';
+      const enTextWrap = document.createElement('div');
+      enTextWrap.className = 'min-w-0 flex-1';
+      const enLabel = document.createElement('span');
+      enLabel.className = 'inline-block text-[10px] font-bold uppercase tracking-wider text-emerald-700 mr-1.5';
+      enLabel.textContent = 'English';
+      const enVal = document.createElement('span');
+      enVal.className = 'font-medium text-slate-900 break-words';
+      enVal.textContent = study.english;
+      enTextWrap.appendChild(enLabel);
+      enTextWrap.appendChild(enVal);
 
-        const btnCopyRom = document.createElement('button');
-        btnCopyRom.type = 'button';
-        btnCopyRom.className = 'text-[10px] font-medium text-slate-400 hover:text-indigo-600 shrink-0';
-        btnCopyRom.textContent = 'Copy';
-        btnCopyRom.addEventListener('click', () => copyTextSafe(study.romaji, 'Copied Romaji!'));
+      const btnCopyEn = document.createElement('button');
+      btnCopyEn.type = 'button';
+      btnCopyEn.className = 'text-[10px] font-medium text-slate-400 hover:text-emerald-700 shrink-0';
+      btnCopyEn.textContent = 'Copy';
+      btnCopyEn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        copyTextSafe(study.english, 'Copied English translation!');
+      });
 
-        romRow.appendChild(romTextWrap);
-        romRow.appendChild(btnCopyRom);
-        transBox.appendChild(romRow);
-      }
-
-      if (study.english) {
-        const enRow = document.createElement('div');
-        enRow.className = 'flex items-start justify-between gap-2 pt-1 border-t border-slate-100';
-        const enTextWrap = document.createElement('div');
-        enTextWrap.className = 'min-w-0 flex-1';
-        const enLabel = document.createElement('span');
-        enLabel.className = 'inline-block text-[10px] font-bold uppercase tracking-wider text-emerald-700 mr-1.5';
-        enLabel.textContent = 'English';
-        const enVal = document.createElement('span');
-        enVal.className = 'font-medium text-slate-900 break-words';
-        enVal.textContent = study.english;
-        enTextWrap.appendChild(enLabel);
-        enTextWrap.appendChild(enVal);
-
-        const btnCopyEn = document.createElement('button');
-        btnCopyEn.type = 'button';
-        btnCopyEn.className = 'text-[10px] font-medium text-slate-400 hover:text-emerald-700 shrink-0';
-        btnCopyEn.textContent = 'Copy';
-        btnCopyEn.addEventListener('click', () => copyTextSafe(study.english, 'Copied English translation!'));
-
-        enRow.appendChild(enTextWrap);
-        enRow.appendChild(btnCopyEn);
-        transBox.appendChild(enRow);
-      }
+      enRow.appendChild(enTextWrap);
+      enRow.appendChild(btnCopyEn);
+      transBox.appendChild(enRow);
 
       if (study.nuance && study.nuance.trim()) {
         const nuanceP = document.createElement('p');
@@ -1856,12 +3091,37 @@ function renderRightPanel() {
 
       const vocabList = Array.isArray(study.breakdown.vocab) ? study.breakdown.vocab : [];
       if (vocabList.length > 0) {
+        const bubbleMeta = {
+          contextJp: jpTrimmed,
+          pageId: page.id,
+          pageName: page.name,
+          bubbleIndex: idx + 1,
+          blockId: blk.id
+        };
         const vSec = document.createElement('div');
         vSec.className = 'space-y-1.5';
+        const vHeadRow = document.createElement('div');
+        vHeadRow.className = 'flex items-center justify-between gap-2';
         const vTitle = document.createElement('div');
         vTitle.className = 'text-[10px] font-bold uppercase tracking-wider text-emerald-800';
         vTitle.textContent = 'Vocabulary & Word Readings';
-        vSec.appendChild(vTitle);
+
+        const allKeysJoined = vocabList.map((v) => normalizeVocabMatchKey(v)).filter(Boolean).join('|');
+        const allSavedHere = vocabList.every((v) => isVocabItemSaved(v));
+        const btnSaveAllVocab = document.createElement('button');
+        btnSaveAllVocab.type = 'button';
+        btnSaveAllVocab.setAttribute('data-vocab-save-all-keys', allKeysJoined);
+        btnSaveAllVocab.className = 'md-vocab-save-btn' + (allSavedHere ? ' is-saved' : '');
+        btnSaveAllVocab.textContent = allSavedHere ? '✓ All Saved' : ('+ Save All (' + vocabList.length + ')');
+        btnSaveAllVocab.title = 'Save all vocabulary words in this speech bubble to your Vocabulary deck';
+        btnSaveAllVocab.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          saveAllVocabFromList(vocabList, bubbleMeta);
+        });
+
+        vHeadRow.appendChild(vTitle);
+        vHeadRow.appendChild(btnSaveAllVocab);
+        vSec.appendChild(vHeadRow);
 
         const vGrid = document.createElement('div');
         vGrid.className = 'space-y-1';
@@ -1900,12 +3160,33 @@ function renderRightPanel() {
 
           topLine.appendChild(wordLeft);
 
+          const rightTags = document.createElement('div');
+          rightTags.className = 'flex items-center gap-1 ml-auto shrink-0';
           if (v.pos) {
             const posPill = document.createElement('span');
             posPill.className = 'px-1.5 py-0.2 rounded bg-emerald-100/80 text-emerald-900 text-[10px] font-semibold shrink-0';
             posPill.textContent = v.pos;
-            topLine.appendChild(posPill);
+            rightTags.appendChild(posPill);
           }
+
+          const vKey = normalizeVocabMatchKey(v);
+          const savedNow = isVocabItemSaved(v);
+          const btnSaveVocab = document.createElement('button');
+          btnSaveVocab.type = 'button';
+          btnSaveVocab.setAttribute('data-vocab-save-btn', '1');
+          btnSaveVocab.setAttribute('data-vocab-save-key', vKey);
+          btnSaveVocab.setAttribute('aria-pressed', savedNow ? 'true' : 'false');
+          btnSaveVocab.className = 'md-vocab-save-btn' + (savedNow ? ' is-saved' : '');
+          btnSaveVocab.textContent = savedNow ? '✓ Saved' : '+ Save';
+          btnSaveVocab.title = savedNow
+            ? 'Saved to your Anki Vocabulary list — click to remove'
+            : 'Save this vocabulary word for review & Anki deck export';
+          btnSaveVocab.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            toggleSaveVocabItem(v, bubbleMeta);
+          });
+          rightTags.appendChild(btnSaveVocab);
+          topLine.appendChild(rightTags);
 
           const meanLine = document.createElement('p');
           meanLine.className = 'text-[11px] text-slate-700 leading-snug';
@@ -1978,10 +3259,17 @@ function syncTabBarClasses() {
     el.tabBtnReviewQueue.className =
       (tab === 'review' ? 'md-tab is-active' : 'md-tab') + ' inline-flex items-center gap-1.5';
   }
+  if (el.tabBtnSavedVocab) {
+    el.tabBtnSavedVocab.className =
+      (tab === 'vocab' ? 'md-tab is-active' : 'md-tab') + ' inline-flex items-center gap-1.5';
+  }
   el.panelAllText.classList.toggle('hidden', tab !== 'all');
   el.panelPageBubbles.classList.toggle('hidden', tab !== 'bubbles');
   if (el.panelReviewQueue) {
     el.panelReviewQueue.classList.toggle('hidden', tab !== 'review');
+  }
+  if (el.panelSavedVocab) {
+    el.panelSavedVocab.classList.toggle('hidden', tab !== 'vocab');
   }
 }
 

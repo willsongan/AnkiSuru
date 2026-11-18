@@ -21,6 +21,8 @@ import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import copy
+import hashlib
+import html
 import io
 import json
 import logging
@@ -29,8 +31,11 @@ from pathlib import Path
 import queue
 import re
 import shutil
+import sqlite3
+import tempfile
 import threading
 import time
+import zipfile
 from typing import Any, Callable
 import urllib.request
 import warnings
@@ -1243,13 +1248,21 @@ def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) 
         if suffix == ".html"
         else None
     )
-    return FileResponse(str(candidate), media_type=media)
+    return FileResponse(
+        str(candidate),
+        media_type=media,
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
   @app.get("/")
   async def index() -> Response:
     html_path = static_root / "index.html"
     if html_path.is_file():
-      return FileResponse(str(html_path), media_type="text/html; charset=utf-8")
+      return FileResponse(
+          str(html_path),
+          media_type="text/html; charset=utf-8",
+          headers={"Cache-Control": "no-cache, must-revalidate"},
+      )
     return JSONResponse({"ok": True, "message": "AnkiSuru Local Server running."})
 
   @app.get("/styles.css")
@@ -1475,6 +1488,160 @@ def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) 
             "accelerator": ocr_engine.accelerator_label,
         },
     }
+
+  def _build_anki_apkg_bytes_sync(deck_name: str, cards_list: list[dict[str, Any]]) -> bytes:
+    clean_deck = (deck_name or "AnkiSuru Manga Vocabulary").strip() or "AnkiSuru Manga Vocabulary"
+    now_ms = int(time.time() * 1000)
+    now_sec = now_ms // 1000
+    model_id = 1731910401
+    deck_id = 1731910402
+
+    card_css = (
+        '.card { font-family: "Roboto", "Noto Sans JP", sans-serif; text-align: center; color: #202124; '
+        "background-color: #ffffff; padding: 28px 20px; line-height: 1.5; }\n"
+        ".nightMode.card, .night_mode .card { color: #e8eaed; background-color: #1e1f22; }\n"
+        ".anki-front { padding: 18px 0 12px; }\n"
+        '.kanji { font-family: "Noto Sans JP", sans-serif; font-size: 44px; font-weight: 700; }\n'
+        "hr#answer { border: 0; border-top: 1px solid #dadce0; margin: 18px auto; max-width: 360px; }\n"
+        ".nightMode hr#answer, .night_mode hr#answer { border-top-color: #3c4043; }\n"
+        ".anki-back { max-width: 480px; margin: 0 auto; }\n"
+        ".romaji { font-size: 22px; font-weight: 600; color: #1a73e8; margin-bottom: 10px; }\n"
+        ".nightMode .romaji, .night_mode .romaji { color: #8ab4f8; }\n"
+        ".meaning { font-size: 20px; font-weight: 500; color: #202124; }\n"
+        ".nightMode .meaning, .night_mode .meaning { color: #e8eaed; }"
+    )
+
+    models_obj = {
+        str(model_id): {
+            "id": model_id,
+            "name": "AnkiSuru Kanji Vocab",
+            "type": 0,
+            "mod": now_sec,
+            "usn": -1,
+            "sortf": 0,
+            "did": None,
+            "tmpls": [{
+                "name": "Kanji -> Romaji & Meaning",
+                "ord": 0,
+                "qfmt": '<div class="anki-front"><div class="kanji">{{Kanji}}</div></div>',
+                "afmt": (
+                    '{{FrontSide}}<hr id="answer"><div class="anki-back">'
+                    '<div class="romaji">{{Romaji}}</div><div class="meaning">{{Meaning}}</div></div>'
+                ),
+                "bqfmt": "",
+                "bafmt": "",
+                "did": None,
+                "bfont": "",
+                "bsize": 0,
+            }],
+            "flds": [
+                {"name": "Kanji", "ord": 0, "sticky": False, "rtl": False, "font": "Noto Sans JP", "size": 28, "media": [], "description": ""},
+                {"name": "Romaji", "ord": 1, "sticky": False, "rtl": False, "font": "Roboto", "size": 18, "media": [], "description": ""},
+                {"name": "Meaning", "ord": 2, "sticky": False, "rtl": False, "font": "Roboto", "size": 18, "media": [], "description": ""},
+            ],
+            "css": card_css,
+            "latexPre": "\\documentclass[12pt]{article}\n\\begin{document}\n",
+            "latexPost": "\\end{document}",
+            "latexsvg": False,
+            "req": [[0, "any", [0]]],
+            "tags": [],
+            "vers": [],
+        }
+    }
+
+    decks_obj = {
+        "1": {
+            "id": 1, "mod": now_sec, "name": "Default", "usn": 0,
+            "lrnToday": [0, 0], "revToday": [0, 0], "newToday": [0, 0], "timeToday": [0, 0],
+            "collapsed": False, "browserCollapsed": False, "desc": "", "dyn": 0, "conf": 1,
+            "extendNew": 10, "extendRev": 50,
+        },
+        str(deck_id): {
+            "id": deck_id, "mod": now_sec, "name": clean_deck, "usn": -1,
+            "lrnToday": [0, 0], "revToday": [0, 0], "newToday": [0, 0], "timeToday": [0, 0],
+            "collapsed": False, "browserCollapsed": False, "desc": "Generated by AnkiSuru Manga Reader",
+            "dyn": 0, "conf": 1, "extendNew": 20, "extendRev": 100,
+        },
+    }
+
+    dconf_obj = {
+        "1": {
+            "id": 1, "mod": 0, "name": "Default", "usn": 0, "maxTaken": 60,
+            "autoplay": True, "timer": 0, "replayq": True,
+            "new": {"bury": False, "delays": [1, 10], "initialFactor": 2500, "ints": [1, 4, 0], "order": 1, "perDay": 20},
+            "rev": {"bury": False, "ease4": 1.3, "ivlFct": 1, "maxIvl": 36500, "perDay": 200, "hardFactor": 1.2},
+            "lapse": {"delays": [10], "leechAction": 1, "leechFails": 8, "minInt": 1, "mult": 0},
+            "dyn": False,
+        }
+    }
+
+    conf_obj = {
+        "nextPos": 1, "estTimes": True, "activeDecks": [1, deck_id], "sortType": "noteFld",
+        "timeLim": 0, "sortBackwards": False, "addToCur": True, "curDeck": deck_id,
+        "newBury": True, "newSpread": 0, "dueCounts": True, "curModel": str(model_id), "collapseTime": 1200,
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      db_path = Path(tmpdir) / "collection.anki2"
+      conn = sqlite3.connect(str(db_path))
+      cur = conn.cursor()
+      cur.executescript(
+          """
+          CREATE TABLE col (id integer primary key, crt integer not null, mod integer not null, scm integer not null, ver integer not null, dty integer not null, usn integer not null, ls integer not null, conf text not null, models text not null, decks text not null, dconf text not null, tags text not null);
+          CREATE TABLE notes (id integer primary key, guid text not null, mid integer not null, mod integer not null, usn integer not null, tags text not null, flds text not null, sfld integer not null, csum integer not null, flags integer not null, data text not null);
+          CREATE TABLE cards (id integer primary key, nid integer not null, did integer not null, ord integer not null, mod integer not null, usn integer not null, type integer not null, queue integer not null, due integer not null, ivl integer not null, factor integer not null, reps integer not null, lapses integer not null, left integer not null, odue integer not null, odid integer not null, flags integer not null, data text not null);
+          CREATE TABLE revlog (id integer primary key, cid integer not null, usn integer not null, ease integer not null, ivl integer not null, lastIvl integer not null, factor integer not null, time integer not null, type integer not null);
+          CREATE TABLE graves (usn integer not null, oid integer not null, type integer not null);
+          """
+      )
+      cur.execute(
+          "INSERT INTO col VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          (
+              1, now_sec, now_ms, now_ms, 11, 0, 0, 0,
+              json.dumps(conf_obj), json.dumps(models_obj), json.dumps(decks_obj), json.dumps(dconf_obj), "{}",
+          ),
+      )
+
+      for idx, item in enumerate(cards_list):
+        kanji = str((item or {}).get("kanji") or "").strip()
+        if not kanji:
+          continue
+        romaji = str((item or {}).get("romaji") or "").strip()
+        meaning = str((item or {}).get("meaning") or "").strip()
+        note_id = now_ms + idx * 2 + 1
+        card_id = now_ms + idx * 2 + 2
+        flds = "\x1f".join([
+            html.escape(kanji).replace("\n", "<br>"),
+            html.escape(romaji).replace("\n", "<br>"),
+            html.escape(meaning).replace("\n", "<br>"),
+        ])
+        guid = hashlib.sha1(f"{clean_deck}::{kanji}::{idx}".encode("utf-8")).hexdigest()[:10]
+        csum = int(hashlib.sha1(kanji.encode("utf-8")).hexdigest()[:8], 16)
+        cur.execute(
+            "INSERT INTO notes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (note_id, guid, model_id, now_sec, -1, " ankisuru ", flds, kanji, csum, 0, ""),
+        )
+        cur.execute(
+            "INSERT INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (card_id, note_id, deck_id, 0, now_sec, -1, 0, 0, idx + 1, 0, 0, 0, 0, 0, 0, 0, 0, ""),
+        )
+
+      conn.commit()
+      conn.close()
+
+      mem_zip = io.BytesIO()
+      with zipfile.ZipFile(mem_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.write(db_path, arcname="collection.anki2")
+        zf.writestr("media", "{}")
+      return mem_zip.getvalue()
+
+  @app.post("/api/export_anki_apkg")
+  async def api_export_anki_apkg(request: Request) -> Response:
+    payload = await request.json()
+    deck_name = str((payload or {}).get("deck_name") or "AnkiSuru Manga Vocabulary")
+    cards_list = (payload or {}).get("cards") or []
+    apkg_bytes = await asyncio.to_thread(_build_anki_apkg_bytes_sync, deck_name, cards_list)
+    return Response(content=apkg_bytes, media_type="application/octet-stream")
 
   @app.post("/api/extract_pages_server")
   async def api_extract_pages_server(

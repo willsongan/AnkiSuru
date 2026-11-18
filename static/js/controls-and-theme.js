@@ -19,22 +19,22 @@ async function setLiveTextMode(enabled) {
   state.liveTextMode = next;
   if (!next) state.livePopupBlockId = null;
   if (next) {
-    state.selectedBlockId = null;
     const page = getSelectedPage();
-    if (page) {
-      const hasAnyText = (page.blocks || []).some((b) => Boolean((b.text || '').trim()));
-      if (!hasAnyText) {
-        if (state.isSampleSet && typeof populateSampleGroundTruthForPage === 'function') {
-          populateSampleGroundTruthForPage(page);
-          updatePageCardInPlace(page);
-          renderRightPanel();
-        } else if (!state.isExtracting) {
-          syncBoxesToggleUI();
-          renderOverlayBoxes();
-          showToast('Extracting Japanese text on this page so you can select & copy it…');
-          await extractPagesQueue([page]);
-          return;
-        }
+    if (state.selectedBlockId && (!page || !(page.blocks || []).some((b) => b.id === state.selectedBlockId))) {
+      state.selectedBlockId = null;
+    }
+    if (page && !isPageAlreadyExtracted(page)) {
+      if (state.isSampleSet && typeof populateSampleGroundTruthForPage === 'function') {
+        populateSampleGroundTruthForPage(page);
+        page.ocrCompleted = true;
+        updatePageCardInPlace(page);
+        renderRightPanel();
+      } else if (!state.isExtracting) {
+        syncBoxesToggleUI();
+        renderOverlayBoxes();
+        showToast('Extracting Japanese text on this page so you can select & copy it…');
+        await extractPagesQueue([page]);
+        return;
       }
     }
   } else {
@@ -79,9 +79,10 @@ function stagePointerCoords(clientX, clientY) {
 el.stageImageWrapper.addEventListener('pointerdown', (ev) => {
   if (state.liveTextMode) {
     if (
-      state.livePopupBlockId &&
+      (state.livePopupBlockId || state.selectedBlockId) &&
       !ev.target.closest('[data-live-text]') &&
-      !ev.target.closest('#liveSelectionCard')
+      !ev.target.closest('#liveSelectionCard') &&
+      !ev.target.closest('button, input, textarea, select, a')
     ) {
       closeLiveBubblePopup();
     }
@@ -165,8 +166,11 @@ el.stageImageWrapper.addEventListener('pointerup', async (ev) => {
     if (target) {
       const res = await recognizeSingleBlock(im, target);
       target.text = res.text;
-      target.charConf = res.charConf;
+      target.charConf = normalizeConf01(res.charConf);
+      target.ocrAttempted = true;
+      target.verified = false;
       page.status = 'done';
+      page.ocrCompleted = true;
       updatePageFullText(page);
     }
     setProgress(false);
@@ -432,7 +436,29 @@ window.addEventListener('keydown', (ev) => {
 
   if (isTyping || !el.stackModal.classList.contains('hidden')) return;
 
-  // Reader Keyboard Shortcuts: 'F' toggles Fullscreen Reader; 'S' toggles Select Text mode
+  // Manga Reader Zoom Shortcuts (+ / =, - / _, 0; also intercept Ctrl/Cmd +/-/0 while in Website Fullscreen)
+  if (!ev.altKey && (!ev.ctrlKey && !ev.metaKey || state.isViewerFullscreen)) {
+    if (ev.key === '+' || ev.key === '=') {
+      ev.preventDefault();
+      wakeFullscreenHud();
+      stepStageZoom(1);
+      return;
+    }
+    if (ev.key === '-' || ev.key === '_') {
+      ev.preventDefault();
+      wakeFullscreenHud();
+      stepStageZoom(-1);
+      return;
+    }
+    if (ev.key === '0') {
+      ev.preventDefault();
+      wakeFullscreenHud();
+      resetStageZoomToFit();
+      return;
+    }
+  }
+
+  // Reader & Rapid-Review Keyboard Shortcuts: F = Fullscreen, S = Select Text, R = Review Tab, N/P = Next/Prev <90%
   if (!ev.ctrlKey && !ev.metaKey && !ev.altKey) {
     if (ev.key === 'f' || ev.key === 'F') {
       ev.preventDefault();
@@ -442,6 +468,32 @@ window.addEventListener('keydown', (ev) => {
     if (ev.key === 's' || ev.key === 'S') {
       ev.preventDefault();
       setLiveTextMode(!state.liveTextMode);
+      return;
+    }
+    if (!state.isViewerFullscreen && (ev.key === 'r' || ev.key === 'R')) {
+      ev.preventDefault();
+      openReviewAndFocusFirst();
+      return;
+    }
+    if (!state.isViewerFullscreen && (ev.key === 'v' || ev.key === 'V')) {
+      ev.preventDefault();
+      setActiveTab('vocab');
+      return;
+    }
+    if (!state.isViewerFullscreen && state.activeTab === 'vocab' && state.vocabViewMode === 'cards' && state.savedVocab.length > 0 && ev.key === ' ') {
+      ev.preventDefault();
+      state.vocabCardFlipped = !state.vocabCardFlipped;
+      renderSavedVocabPanel();
+      return;
+    }
+    if (ev.key === 'n' || ev.key === 'N') {
+      ev.preventDefault();
+      jumpToLowConfidenceByStep(1);
+      return;
+    }
+    if (ev.key === 'p' || ev.key === 'P') {
+      ev.preventDefault();
+      jumpToLowConfidenceByStep(-1);
       return;
     }
   }
@@ -458,7 +510,9 @@ window.addEventListener('keydown', (ev) => {
       goToPageByOffset(-1, { animateSlide: true });
       return;
     }
-    if (!state.selectedBlockId && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    const hasHorizZoomOverflow = !state.fitMode && el.viewerViewport &&
+      (el.viewerViewport.scrollWidth > el.viewerViewport.clientWidth + 8);
+    if (!state.selectedBlockId && !hasHorizZoomOverflow && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
       if (ev.key === 'ArrowRight') {
         ev.preventDefault();
         goToPageByOffset(1, { animateSlide: true });
@@ -728,11 +782,13 @@ el.viewerViewport.addEventListener('click', (ev) => {
   }
 });
 
-// Interactive Pointer Drag-to-Slide / Touch Swipe on Manga Stage
+// Interactive 2D Grab-to-Pan (when zoomed) & Pointer Drag-to-Slide Page Turn (when fitted)
+let stagePan = null;
+
 el.viewerViewport.addEventListener('pointerdown', (ev) => {
   if (ev.button !== 0 || state.drawMode || boxManip) return;
-  if (!getSelectedPage() || state.pages.length <= 1) return;
-  if (ev.target.closest('[data-bbox-id], [data-live-text], #liveSelectionCard, button, input, a, #emptyViewerState')) return;
+  if (!getSelectedPage()) return;
+  if (ev.target.closest('#liveSelectionCard, button, input, a, #emptyViewerState')) return;
 
   const vpRect = el.viewerViewport.getBoundingClientRect();
   if (
@@ -741,8 +797,25 @@ el.viewerViewport.addEventListener('pointerdown', (ev) => {
   ) {
     return;
   }
-  const hasHorizOverflow = !state.fitMode && (el.viewerViewport.scrollWidth > el.viewerViewport.clientWidth + 8);
-  if (hasHorizOverflow) return;
+
+  // When zoomed and overflowing the viewport, drag-pan smoothly in 2D like a native manga reader
+  if (isViewportZoomOverflowing()) {
+    if (!state.liveTextMode && state.showBoxes && ev.target.closest('[data-bbox-id]')) {
+      return;
+    }
+    stagePan = {
+      pointerId: ev.pointerId,
+      startX: ev.clientX,
+      startY: ev.clientY,
+      startScrollLeft: el.viewerViewport.scrollLeft,
+      startScrollTop: el.viewerViewport.scrollTop,
+      engaged: false
+    };
+    return;
+  }
+
+  if (state.pages.length <= 1) return;
+  if (ev.target.closest('[data-bbox-id], [data-live-text]')) return;
 
   readerSlide = {
     pointerId: ev.pointerId,
@@ -755,6 +828,29 @@ el.viewerViewport.addEventListener('pointerdown', (ev) => {
 });
 
 window.addEventListener('pointermove', (ev) => {
+  if (stagePan && ev.pointerId === stagePan.pointerId) {
+    if (state.drawMode || boxManip) {
+      stagePan = null;
+      el.viewerViewport.classList.remove('is-grab-panning');
+      return;
+    }
+    const dx = ev.clientX - stagePan.startX;
+    const dy = ev.clientY - stagePan.startY;
+    if (!stagePan.engaged) {
+      if (Math.hypot(dx, dy) < 6) return;
+      stagePan.engaged = true;
+      clearSideGutterHoverUI();
+      el.viewerViewport.classList.add('is-grab-panning');
+    }
+    ev.preventDefault();
+    el.viewerViewport.scrollLeft = Math.max(0, stagePan.startScrollLeft - dx);
+    el.viewerViewport.scrollTop = Math.max(0, stagePan.startScrollTop - dy);
+    if (state.liveTextMode && state.livePopupBlockId && typeof positionOpenLivePopup === 'function') {
+      requestAnimationFrame(positionOpenLivePopup);
+    }
+    return;
+  }
+
   if (!readerSlide || ev.pointerId !== readerSlide.pointerId || readerSlide.aborted) return;
   if (state.drawMode || boxManip) {
     readerSlide.aborted = true;
@@ -810,6 +906,17 @@ window.addEventListener('pointermove', (ev) => {
 }, { passive: false });
 
 function finishReaderSlide(ev) {
+  if (stagePan && ev.pointerId === stagePan.pointerId) {
+    const p = stagePan;
+    stagePan = null;
+    el.viewerViewport.classList.remove('is-grab-panning');
+    syncViewportGrabCursor();
+    if (p.engaged) {
+      suppressNextViewerClick = true;
+      setTimeout(() => { suppressNextViewerClick = false; }, 90);
+    }
+    return;
+  }
   if (!readerSlide || ev.pointerId !== readerSlide.pointerId) return;
   const s = readerSlide;
   readerSlide = null;
@@ -853,6 +960,19 @@ let wheelSwipeResetTimer = null;
 let lastWheelPageTurnAt = 0;
 
 el.viewerViewport.addEventListener('wheel', (ev) => {
+  // Smooth Ctrl/Cmd + Mouse Wheel & Trackpad Pinch-to-Zoom anchored at cursor
+  if (ev.ctrlKey || ev.metaKey) {
+    if (!getSelectedPage()) return;
+    ev.preventDefault();
+    wakeFullscreenHud();
+    const rawDelta = ev.deltaMode === 1 ? ev.deltaY * 28 : ev.deltaY;
+    const clampedDelta = Math.max(-160, Math.min(160, rawDelta));
+    const factor = Math.exp(-clampedDelta * 0.0022);
+    const curFactor = state.fitMode ? 1.0 : state.zoom;
+    setStageZoomFactor(curFactor * factor, ev.clientX, ev.clientY);
+    return;
+  }
+
   if (state.pages.length <= 1 || state.drawMode) return;
   const hasHorizOverflow = !state.fitMode && (el.viewerViewport.scrollWidth > el.viewerViewport.clientWidth + 8);
   if (hasHorizOverflow) return;
@@ -953,30 +1073,54 @@ function positionOpenLivePopup() {
     return;
   }
   try {
-    const sRect = el.stageImageWrapper.getBoundingClientRect();
     const anchorRect = reg.getBoundingClientRect();
-    el.liveSelectionCard.classList.remove('hidden', 'place-above', 'place-below');
-    const cardW = Math.min(360, Math.max(236, el.liveSelectionCard.offsetWidth || 260));
-    const centerLeft = (anchorRect.left + anchorRect.right) * 0.5 - sRect.left - cardW * 0.5;
-    const clampedLeft = Math.max(8, Math.min(Math.max(8, sRect.width - cardW - 8), centerLeft));
-    const relTop = anchorRect.top - sRect.top;
-    const relBottom = anchorRect.bottom - sRect.top;
+    if (el.viewerViewport) {
+      const vpRect = el.viewerViewport.getBoundingClientRect();
+      if (
+        anchorRect.bottom < vpRect.top + 4 ||
+        anchorRect.top > vpRect.bottom - 4 ||
+        anchorRect.right < vpRect.left + 4 ||
+        anchorRect.left > vpRect.right - 4
+      ) {
+        el.liveSelectionCard.classList.add('hidden');
+        return;
+      }
+    }
 
+    const vw = Math.max(320, window.innerWidth || document.documentElement.clientWidth || 1024);
+    const vh = Math.max(240, window.innerHeight || document.documentElement.clientHeight || 768);
+
+    el.liveSelectionCard.classList.remove('hidden', 'place-above', 'place-below');
+    const cardW = Math.min(380, Math.max(236, el.liveSelectionCard.offsetWidth || 260));
+    const cardH = Math.max(76, el.liveSelectionCard.offsetHeight || 108);
+
+    const centerLeft = (anchorRect.left + anchorRect.right) * 0.5 - cardW * 0.5;
+    const clampedLeft = Math.max(8, Math.min(Math.max(8, vw - cardW - 8), centerLeft));
     el.liveSelectionCard.style.left = Math.round(clampedLeft) + 'px';
-    if (relTop >= 104) {
+
+    const spaceAbove = anchorRect.top - 8;
+    const spaceBelow = vh - anchorRect.bottom - 8;
+
+    if (spaceAbove >= cardH + 6 || (spaceAbove > spaceBelow && spaceAbove >= 96)) {
       el.liveSelectionCard.classList.add('place-above');
-      el.liveSelectionCard.style.top = Math.round(relTop - 8) + 'px';
+      const targetBottomY = Math.max(cardH + 8, Math.min(vh - 8, anchorRect.top - 8));
+      el.liveSelectionCard.style.top = Math.round(targetBottomY) + 'px';
     } else {
       el.liveSelectionCard.classList.add('place-below');
-      el.liveSelectionCard.style.top = Math.round(Math.min(sRect.height - 12, relBottom + 8)) + 'px';
+      const targetTopY = Math.max(8, Math.min(Math.max(8, vh - cardH - 8), anchorRect.bottom + 8));
+      el.liveSelectionCard.style.top = Math.round(targetTopY) + 'px';
     }
   } catch (_e) {
     el.liveSelectionCard.classList.add('hidden');
   }
 }
 
-function openLiveBubblePopup(blockId) {
+function openLiveBubblePopup(blockId, opts) {
+  const options = opts || {};
   state.livePopupBlockId = blockId;
+  state.selectedBlockId = blockId;
+  syncToolbarBoxDeleteBtn();
+
   if (window.getSelection) {
     try { window.getSelection().removeAllRanges(); } catch (_e) {}
   }
@@ -993,22 +1137,50 @@ function openLiveBubblePopup(blockId) {
   if (el.liveSelPreviewBody) {
     el.liveSelPreviewBody.textContent = info.text;
   }
+
+  // Behavior consistency with Box Mode: switch to Page Bubbles & highlight + scroll to the clicked bubble card
+  if (options.preserveTab !== true && state.activeTab !== 'bubbles') {
+    state.activeTab = 'bubbles';
+    syncTabBarClasses();
+    if (options.skipRightRender !== true) {
+      renderRightPanel();
+    }
+  } else if (options.skipRightRender !== true) {
+    renderRightPanel();
+  } else if (typeof syncSelectedBubbleCardInPlace === 'function') {
+    syncSelectedBubbleCardInPlace(blockId, { scrollCard: false });
+  }
+
+  if (options.skipRightScroll !== true && el.panelPageBubbles && typeof scrollCardIntoContainer === 'function') {
+    const cardEl = el.panelPageBubbles.querySelector('[data-block-card="' + blockId + '"]');
+    if (cardEl) scrollCardIntoContainer(el.panelPageBubbles, cardEl);
+  }
+
   positionOpenLivePopup();
   syncLiveSelectionUI();
 }
 
-function closeLiveBubblePopup() {
+function closeLiveBubblePopup(opts) {
+  const options = opts || {};
   state.livePopupBlockId = null;
+  if (options.keepSelectedBlock !== true) {
+    state.selectedBlockId = null;
+    syncToolbarBoxDeleteBtn();
+  }
   if (window.getSelection) {
     try { window.getSelection().removeAllRanges(); } catch (_e) {}
   }
   if (el.bboxOverlayLayer) {
-    el.bboxOverlayLayer.querySelectorAll('.live-text-region.has-selection').forEach((n) => {
-      n.classList.remove('has-selection');
+    el.bboxOverlayLayer.querySelectorAll('.live-text-region').forEach((n) => {
+      const keep = Boolean(state.selectedBlockId && n.getAttribute('data-bbox-id') === state.selectedBlockId);
+      n.classList.toggle('has-selection', keep);
     });
   }
   if (el.liveSelectionCard) {
     el.liveSelectionCard.classList.add('hidden');
+  }
+  if (typeof syncSelectedBubbleCardInPlace === 'function') {
+    syncSelectedBubbleCardInPlace(state.selectedBlockId, { scrollCard: false });
   }
   syncLiveSelectionUI();
 }
@@ -1029,6 +1201,19 @@ function syncLiveSelectionUI() {
     return;
   }
 
+  if (state.selectedBlockId !== info.blk.id) {
+    state.selectedBlockId = info.blk.id;
+    syncToolbarBoxDeleteBtn();
+  }
+  if (el.bboxOverlayLayer) {
+    el.bboxOverlayLayer.querySelectorAll('.live-text-region').forEach((node) => {
+      node.classList.toggle('has-selection', node.getAttribute('data-bbox-id') === info.blk.id);
+    });
+  }
+  if (typeof syncSelectedBubbleCardInPlace === 'function') {
+    syncSelectedBubbleCardInPlace(info.blk.id, { scrollCard: true });
+  }
+
   const sub = getPopupHighlightedSubstring();
   const totalChars = Array.from(info.text).length;
   const subChars = sub ? Array.from(sub).length : 0;
@@ -1037,7 +1222,7 @@ function syncLiveSelectionUI() {
     el.btnCopySelectedLiveText.disabled = false;
   }
   const needsReview = isBlockBelowReviewThreshold(info.blk, info.page);
-  const confPct = typeof info.blk.charConf === 'number' ? Math.round(info.blk.charConf * 100) : null;
+  const confPct = formatOcrConfPercent(info.blk.charConf);
   if (el.btnVerifyPopupBubble) {
     el.btnVerifyPopupBubble.classList.toggle('hidden', !needsReview);
   }
@@ -1066,7 +1251,25 @@ function syncLiveSelectionUI() {
       ? 'Copy highlighted characters'
       : 'Copy entire sentence';
   }
-  // Sync Offline Romaji toggle button & live Romaji readout (without clobbering active drag inside #liveSelRomajiBody)
+  // Sync Offline Romaji (default OFF), English translation, and Vocab & Grammar breakdown inside popup
+  const activeTask = state.gemini.activeTasks.get(info.blk.id) || null;
+  const study = info.blk.study || null;
+  const isStale = Boolean(study && study.sourceText && study.sourceText !== info.text);
+  const hasTrans = Boolean(study && study.english);
+  const hasBreakdown = Boolean(study && study.breakdown && (
+    (Array.isArray(study.breakdown.vocab) && study.breakdown.vocab.length > 0) ||
+    (Array.isArray(study.breakdown.grammar) && study.breakdown.grammar.length > 0)
+  ));
+  const showPopupEn = activeTask === 'translate' || Boolean(hasTrans && study.showTranslation !== false);
+  const showPopupBd = activeTask === 'breakdown' || Boolean(hasBreakdown && study.showBreakdown);
+
+  if (el.liveSelectionCard) {
+    el.liveSelectionCard.classList.toggle(
+      'has-study-open',
+      Boolean(state.showPopupRomaji || showPopupEn || showPopupBd)
+    );
+  }
+
   if (el.btnTogglePopupRomaji) {
     el.btnTogglePopupRomaji.classList.toggle('is-active', Boolean(state.showPopupRomaji));
     el.btnTogglePopupRomaji.setAttribute('aria-pressed', state.showPopupRomaji ? 'true' : 'false');
@@ -1103,6 +1306,229 @@ function syncLiveSelectionUI() {
     }
   }
 
+  // Sync Popup English button & English sub-panel
+  if (el.btnPopupEnglish) {
+    el.btnPopupEnglish.disabled = Boolean(activeTask);
+    const enActive = Boolean(hasTrans && !isStale && study.showTranslation !== false);
+    el.btnPopupEnglish.classList.toggle('is-active', enActive);
+    el.btnPopupEnglish.setAttribute('aria-pressed', enActive ? 'true' : 'false');
+    if (activeTask === 'translate') {
+      el.btnPopupEnglish.textContent = 'Translating…';
+    } else if (hasTrans && !isStale) {
+      el.btnPopupEnglish.textContent = study.showTranslation === false ? 'English' : 'Hide English';
+    } else {
+      el.btnPopupEnglish.textContent = 'English';
+    }
+  }
+  if (el.liveSelEnglishWrap) {
+    el.liveSelEnglishWrap.classList.toggle('hidden', !showPopupEn);
+    if (showPopupEn) {
+      let selectingInsideEn = false;
+      if (window.getSelection && el.liveSelEnglishWrap) {
+        const s = window.getSelection();
+        if (s && s.rangeCount > 0 && !s.isCollapsed) {
+          selectingInsideEn =
+            (s.anchorNode && el.liveSelEnglishWrap.contains(s.anchorNode)) ||
+            (s.focusNode && el.liveSelEnglishWrap.contains(s.focusNode));
+        }
+      }
+      if (!selectingInsideEn) {
+        if (activeTask === 'translate') {
+          if (el.liveSelEnglishLabel) el.liveSelEnglishLabel.textContent = 'Translating to English…';
+          if (el.liveSelEnglishBody) el.liveSelEnglishBody.textContent = 'Analyzing manga context with Gemini…';
+          if (el.liveSelNuanceBody) el.liveSelNuanceBody.classList.add('hidden');
+          if (el.btnCopyPopupEnglish) el.btnCopyPopupEnglish.classList.add('hidden');
+        } else if (hasTrans) {
+          if (el.liveSelEnglishLabel) el.liveSelEnglishLabel.textContent = 'English';
+          if (el.liveSelEnglishBody) el.liveSelEnglishBody.textContent = study.english;
+          if (el.btnCopyPopupEnglish) el.btnCopyPopupEnglish.classList.remove('hidden');
+          if (el.liveSelNuanceBody) {
+            const nu = (study.nuance || '').trim();
+            el.liveSelNuanceBody.classList.toggle('hidden', !nu);
+            if (nu) el.liveSelNuanceBody.textContent = 'Tone / Nuance: ' + nu;
+          }
+        }
+      }
+    }
+  }
+
+  // Sync Popup Highlighted-Word Quick Save button
+  if (el.btnPopupSaveWord) {
+    const cleanSub = (sub || '').trim();
+    const canSaveSub = cleanSub.length > 0 && Array.from(cleanSub).length <= 32;
+    el.btnPopupSaveWord.classList.toggle('hidden', !canSaveSub);
+    if (canSaveSub) {
+      const subSaved = isVocabItemSaved({ kanji: cleanSub });
+      el.btnPopupSaveWord.classList.toggle('is-saved-word', subSaved);
+      const shortSub = Array.from(cleanSub).length > 8 ? Array.from(cleanSub).slice(0, 8).join('') + '…' : cleanSub;
+      el.btnPopupSaveWord.textContent = subSaved ? ('✓ Saved "' + shortSub + '"') : ('+ Save "' + shortSub + '"');
+    }
+  }
+
+  // Sync Popup Vocab & Grammar button & Breakdown sub-panel
+  if (el.btnPopupBreakdown) {
+    el.btnPopupBreakdown.disabled = Boolean(activeTask);
+    const bdActive = Boolean(hasBreakdown && !isStale && study.showBreakdown);
+    el.btnPopupBreakdown.classList.toggle('is-active-bd', bdActive);
+    el.btnPopupBreakdown.setAttribute('aria-pressed', bdActive ? 'true' : 'false');
+    if (activeTask === 'breakdown') {
+      el.btnPopupBreakdown.textContent = 'Breaking down…';
+    } else if (hasBreakdown && !isStale) {
+      el.btnPopupBreakdown.textContent = study.showBreakdown ? 'Hide Vocab & Grammar' : 'Vocab & Grammar';
+    } else {
+      el.btnPopupBreakdown.textContent = 'Vocab & Grammar';
+    }
+  }
+  if (el.liveSelBreakdownWrap && el.liveSelBreakdownBody) {
+    el.liveSelBreakdownWrap.classList.toggle('hidden', !showPopupBd);
+    if (showPopupBd) {
+      const popupVocabList = (hasBreakdown && study && study.breakdown && Array.isArray(study.breakdown.vocab))
+        ? study.breakdown.vocab
+        : [];
+      if (el.btnPopupSaveAllVocab) {
+        const showSaveAll = activeTask !== 'breakdown' && popupVocabList.length > 0;
+        el.btnPopupSaveAllVocab.classList.toggle('hidden', !showSaveAll);
+        if (showSaveAll) {
+          const allPopupSaved = popupVocabList.every((v) => isVocabItemSaved(v));
+          el.btnPopupSaveAllVocab.classList.toggle('is-saved', allPopupSaved);
+          el.btnPopupSaveAllVocab.textContent = allPopupSaved
+            ? '✓ All Saved'
+            : ('+ Save All (' + popupVocabList.length + ')');
+        }
+      }
+      const renderKey = activeTask === 'breakdown'
+        ? ('loading:' + info.blk.id)
+        : ('ready:' + info.blk.id + ':' + (study ? study.sourceText : ''));
+      if (el.liveSelBreakdownBody.getAttribute('data-render-key') !== renderKey) {
+        el.liveSelBreakdownBody.setAttribute('data-render-key', renderKey);
+        el.liveSelBreakdownBody.innerHTML = '';
+        if (activeTask === 'breakdown') {
+          if (el.liveSelBreakdownLabel) el.liveSelBreakdownLabel.textContent = 'Analyzing Vocab & Grammar…';
+          const p = document.createElement('p');
+          p.className = 'text-xs text-slate-500';
+          p.textContent = 'Breaking down Japanese readings, dictionary forms & grammar…';
+          el.liveSelBreakdownBody.appendChild(p);
+        } else if (hasBreakdown) {
+          if (el.liveSelBreakdownLabel) el.liveSelBreakdownLabel.textContent = 'Vocab & Grammar';
+          const vocabList = popupVocabList;
+          if (vocabList.length > 0) {
+            const popupMeta = {
+              contextJp: info.text,
+              pageId: info.page.id,
+              pageName: info.page.name,
+              bubbleIndex: info.index,
+              blockId: info.blk.id
+            };
+            const vStack = document.createElement('div');
+            vStack.className = 'space-y-1';
+            vocabList.forEach((v) => {
+              const vItem = document.createElement('div');
+              vItem.className = 'rounded bg-white border border-slate-200 px-2 py-1 text-xs';
+              const topLine = document.createElement('div');
+              topLine.className = 'flex flex-wrap items-center justify-between gap-1';
+              const leftW = document.createElement('div');
+              leftW.className = 'flex flex-wrap items-baseline gap-1';
+              const surf = document.createElement('span');
+              surf.className = 'jp-text font-bold text-slate-900';
+              surf.textContent = v.surface || '';
+              leftW.appendChild(surf);
+              if (v.reading && v.reading !== v.surface) {
+                const rd = document.createElement('span');
+                rd.className = 'jp-text text-[11px] text-indigo-700 font-medium';
+                rd.textContent = '【' + v.reading + '】';
+                leftW.appendChild(rd);
+              }
+              if (v.romaji) {
+                const rm = document.createElement('span');
+                rm.className = 'italic text-[11px] text-slate-500';
+                rm.textContent = v.romaji;
+                leftW.appendChild(rm);
+              }
+              if (v.dictForm && v.dictForm !== v.surface) {
+                const df = document.createElement('span');
+                df.className = 'jp-text text-[10px] text-slate-500 bg-slate-100 px-1 rounded';
+                df.textContent = 'dict: ' + v.dictForm;
+                leftW.appendChild(df);
+              }
+              topLine.appendChild(leftW);
+
+              const rightTags = document.createElement('div');
+              rightTags.className = 'flex items-center gap-1 ml-auto shrink-0';
+              if (v.pos) {
+                const pos = document.createElement('span');
+                pos.className = 'px-1.5 py-0.2 rounded bg-emerald-100/80 text-emerald-900 text-[10px] font-semibold shrink-0';
+                pos.textContent = v.pos;
+                rightTags.appendChild(pos);
+              }
+              const vKey = normalizeVocabMatchKey(v);
+              const savedNow = isVocabItemSaved(v);
+              const btnSaveV = document.createElement('button');
+              btnSaveV.type = 'button';
+              btnSaveV.setAttribute('data-vocab-save-btn', '1');
+              btnSaveV.setAttribute('data-vocab-save-key', vKey);
+              btnSaveV.setAttribute('aria-pressed', savedNow ? 'true' : 'false');
+              btnSaveV.className = 'md-vocab-save-btn' + (savedNow ? ' is-saved' : '');
+              btnSaveV.textContent = savedNow ? '✓ Saved' : '+ Save';
+              btnSaveV.addEventListener('pointerdown', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+              });
+              btnSaveV.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                toggleSaveVocabItem(v, popupMeta);
+              });
+              rightTags.appendChild(btnSaveV);
+              topLine.appendChild(rightTags);
+
+              const mean = document.createElement('p');
+              mean.className = 'text-[11px] text-slate-700 leading-snug mt-0.5';
+              mean.textContent = v.meaning || '';
+              vItem.appendChild(topLine);
+              vItem.appendChild(mean);
+              vStack.appendChild(vItem);
+            });
+            el.liveSelBreakdownBody.appendChild(vStack);
+          }
+          const grammarList = Array.isArray(study.breakdown.grammar) ? study.breakdown.grammar : [];
+          if (grammarList.length > 0) {
+            const gStack = document.createElement('div');
+            gStack.className = 'space-y-1 pt-1.5 border-t border-slate-200';
+            grammarList.forEach((g) => {
+              const gItem = document.createElement('div');
+              gItem.className = 'rounded bg-white border border-indigo-100 px-2 py-1 text-xs';
+              const gHead = document.createElement('div');
+              gHead.className = 'flex flex-wrap items-center justify-between gap-1';
+              const pat = document.createElement('span');
+              pat.className = 'jp-text font-bold text-indigo-900';
+              pat.textContent = g.pattern || '';
+              gHead.appendChild(pat);
+              if (g.level) {
+                const lvl = document.createElement('span');
+                lvl.className = 'px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-semibold';
+                lvl.textContent = g.level;
+                gHead.appendChild(lvl);
+              }
+              const exp = document.createElement('p');
+              exp.className = 'text-[11px] text-slate-700 leading-snug mt-0.5';
+              exp.textContent = g.explanation || '';
+              gItem.appendChild(gHead);
+              gItem.appendChild(exp);
+              gStack.appendChild(gItem);
+            });
+            el.liveSelBreakdownBody.appendChild(gStack);
+          }
+        }
+      }
+    }
+  }
+
+  if (el.btnPopupRefreshStudy) {
+    const canRefresh = Boolean((hasTrans || hasBreakdown) && !activeTask);
+    el.btnPopupRefreshStudy.classList.toggle('hidden', !canRefresh);
+    el.btnPopupRefreshStudy.textContent = isStale ? '↻ Update' : '↻';
+  }
+
   if (el.liveBannerStatusText) {
     const activeStr = sub || info.text;
     const clipped = activeStr.length > 44 ? activeStr.slice(0, 44) + '…' : activeStr;
@@ -1135,7 +1561,83 @@ if (el.liveSelectionCard) {
   });
 }
 
-// Double-click anywhere on the manga page to auto-start fast single-page extraction
+function findExtractedBlockAtCoords(page, rx, ry) {
+  if (!page || !page.width || !page.height || !Array.isArray(page.blocks)) return null;
+  const px = rx * page.width;
+  const py = ry * page.height;
+  let best = null;
+  let bestArea = Infinity;
+  for (const b of page.blocks) {
+    if (!Boolean((b.text || '').trim())) continue;
+    if (px >= b.x1 && px <= b.x2 && py >= b.y1 && py <= b.y2) {
+      const area = Math.max(1, (b.x2 - b.x1) * (b.y2 - b.y1));
+      if (area < bestArea) {
+        bestArea = area;
+        best = b;
+      }
+    }
+  }
+  return best;
+}
+
+async function activateSelectTextOnPageDoubleClick(page, coords) {
+  const target = page || getSelectedPage();
+  if (!target) return;
+
+  if (state.drawMode) {
+    setDrawMode(false);
+  }
+  state.selectedBlockId = null;
+
+  // Already extracted -> never re-trigger extraction; immediately enter Select Text mode!
+  if (isPageAlreadyExtracted(target)) {
+    const wasLive = Boolean(state.liveTextMode);
+    state.liveTextMode = true;
+    syncBoxesToggleUI();
+    renderOverlayBoxes();
+    renderRightPanel();
+
+    if (coords && state.selectedPageId === target.id && typeof openLiveBubblePopup === 'function') {
+      const hitBlk = findExtractedBlockAtCoords(target, coords.rx, coords.ry);
+      if (hitBlk) {
+        openLiveBubblePopup(hitBlk.id);
+        return;
+      }
+    }
+    if (!wasLive) {
+      showToast('Select Text mode active — click any speech bubble to read & copy.');
+    }
+    return;
+  }
+
+  // Not extracted yet -> enter Select Text mode immediately and run fast single-page extraction once!
+  state.liveTextMode = true;
+  syncBoxesToggleUI();
+  renderOverlayBoxes();
+  renderRightPanel();
+
+  if (state.isExtracting) {
+    showToast('Extraction already running…', 'warn');
+    return;
+  }
+
+  await quickExtractSinglePage(target);
+
+  if (!state.liveTextMode) {
+    state.liveTextMode = true;
+    syncBoxesToggleUI();
+    renderOverlayBoxes();
+    renderRightPanel();
+  }
+  if (coords && state.selectedPageId === target.id && typeof openLiveBubblePopup === 'function') {
+    const hitBlk = findExtractedBlockAtCoords(target, coords.rx, coords.ry);
+    if (hitBlk) {
+      openLiveBubblePopup(hitBlk.id);
+    }
+  }
+}
+
+// Double-click anywhere on the manga page: enters Select Text mode (and extracts only if not already extracted)
 el.stageImageWrapper.addEventListener('dblclick', (ev) => {
   if (state.drawMode) return;
   if (ev.target.closest('#liveSelectionCard, .bbox-quickbar, [data-resize-dir], button, input, textarea, select, a')) {
@@ -1143,16 +1645,13 @@ el.stageImageWrapper.addEventListener('dblclick', (ev) => {
   }
   const page = getSelectedPage();
   if (!page) return;
-  // In Select Text mode, let clicks on already-extracted bubble hotspots open the sentence popup without re-running OCR
-  if (state.liveTextMode && ev.target.closest('[data-live-text]')) {
-    return;
-  }
   ev.preventDefault();
   ev.stopPropagation();
   if (window.getSelection) {
     try { window.getSelection().removeAllRanges(); } catch (_e) {}
   }
-  quickExtractSinglePage(page);
+  const coords = stagePointerCoords(ev.clientX, ev.clientY);
+  activateSelectTextOnPageDoubleClick(page, coords);
 });
 
 if (el.btnCopySelectedLiveText) {
@@ -1198,9 +1697,10 @@ if (el.liveSelectionCopyChip) {
   });
 }
 if (el.btnTogglePopupRomaji) {
+  state.showPopupRomaji = false;
   try {
-    const savedRom = localStorage.getItem('ankisuru_popup_romaji_v1');
-    if (savedRom === '0') state.showPopupRomaji = false;
+    const savedRom = localStorage.getItem('ankisuru_popup_romaji_v2');
+    if (savedRom === '1') state.showPopupRomaji = true;
   } catch (_e) {}
   el.btnTogglePopupRomaji.addEventListener('pointerdown', (ev) => {
     ev.preventDefault();
@@ -1211,10 +1711,127 @@ if (el.btnTogglePopupRomaji) {
     ev.stopPropagation();
     state.showPopupRomaji = !state.showPopupRomaji;
     try {
-      localStorage.setItem('ankisuru_popup_romaji_v1', state.showPopupRomaji ? '1' : '0');
+      localStorage.setItem('ankisuru_popup_romaji_v2', state.showPopupRomaji ? '1' : '0');
     } catch (_e) {}
     syncLiveSelectionUI();
     positionOpenLivePopup();
+  });
+}
+if (el.btnPopupEnglish) {
+  el.btnPopupEnglish.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnPopupEnglish.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const info = getActivePopupBlockInfo();
+    if (!info) return;
+    const study = info.blk.study || null;
+    const isStale = Boolean(study && study.sourceText && study.sourceText !== info.text);
+    const hasTrans = Boolean(study && study.english);
+    if (hasTrans && !isStale) {
+      info.blk.study.showTranslation = info.blk.study.showTranslation === false;
+      notifyStudyViewsUpdated(info.blk.id);
+    } else {
+      requestBubbleTranslation(info.page, info.blk, isStale);
+    }
+  });
+}
+if (el.btnPopupBreakdown) {
+  el.btnPopupBreakdown.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnPopupBreakdown.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const info = getActivePopupBlockInfo();
+    if (!info) return;
+    const study = info.blk.study || null;
+    const isStale = Boolean(study && study.sourceText && study.sourceText !== info.text);
+    const hasBreakdown = Boolean(study && study.breakdown && (
+      (Array.isArray(study.breakdown.vocab) && study.breakdown.vocab.length > 0) ||
+      (Array.isArray(study.breakdown.grammar) && study.breakdown.grammar.length > 0)
+    ));
+    if (hasBreakdown && !isStale) {
+      info.blk.study.showBreakdown = !info.blk.study.showBreakdown;
+      notifyStudyViewsUpdated(info.blk.id);
+    } else {
+      requestBubbleBreakdown(info.page, info.blk, isStale);
+    }
+  });
+}
+if (el.btnPopupSaveWord) {
+  el.btnPopupSaveWord.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnPopupSaveWord.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const info = getActivePopupBlockInfo();
+    const sub = getPopupHighlightedSubstring();
+    if (sub && info) {
+      saveHighlightedWordFromPopup(sub, info);
+    }
+  });
+}
+if (el.btnPopupSaveAllVocab) {
+  el.btnPopupSaveAllVocab.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnPopupSaveAllVocab.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const info = getActivePopupBlockInfo();
+    if (!info || !info.blk || !info.blk.study || !info.blk.study.breakdown) return;
+    const vocabList = Array.isArray(info.blk.study.breakdown.vocab) ? info.blk.study.breakdown.vocab : [];
+    saveAllVocabFromList(vocabList, {
+      contextJp: info.text,
+      pageId: info.page.id,
+      pageName: info.page.name,
+      bubbleIndex: info.index,
+      blockId: info.blk.id
+    });
+  });
+}
+if (el.btnPopupRefreshStudy) {
+  el.btnPopupRefreshStudy.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnPopupRefreshStudy.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const info = getActivePopupBlockInfo();
+    if (!info) return;
+    const study = info.blk.study || null;
+    const hasBreakdown = Boolean(study && study.breakdown && (
+      (Array.isArray(study.breakdown.vocab) && study.breakdown.vocab.length > 0) ||
+      (Array.isArray(study.breakdown.grammar) && study.breakdown.grammar.length > 0)
+    ));
+    if (hasBreakdown && study.showBreakdown) {
+      requestBubbleBreakdown(info.page, info.blk, true);
+    } else {
+      requestBubbleTranslation(info.page, info.blk, true);
+    }
+  });
+}
+if (el.btnCopyPopupEnglish) {
+  el.btnCopyPopupEnglish.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnCopyPopupEnglish.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const info = getActivePopupBlockInfo();
+    const enTxt = info && info.blk && info.blk.study ? (info.blk.study.english || '').trim() : '';
+    if (enTxt) {
+      copyTextSafe(enTxt, 'Copied English translation!');
+    }
   });
 }
 if (el.btnCopyPopupRomaji) {
@@ -1306,10 +1923,37 @@ el.activePageImage.addEventListener('load', () => {
   }
 });
 window.addEventListener('resize', () => {
+  const page = getSelectedPage();
+  if (page) {
+    applyStageZoom(page);
+  }
   if (state.liveTextMode && typeof positionOpenLivePopup === 'function') {
     requestAnimationFrame(positionOpenLivePopup);
   }
 });
+window.addEventListener('scroll', () => {
+  if (state.liveTextMode && state.livePopupBlockId && typeof positionOpenLivePopup === 'function') {
+    requestAnimationFrame(positionOpenLivePopup);
+  }
+}, { passive: true });
+if (el.viewerViewport) {
+  el.viewerViewport.addEventListener('scroll', () => {
+    if (state.liveTextMode && state.livePopupBlockId) {
+      requestAnimationFrame(positionOpenLivePopup);
+    }
+  }, { passive: true });
+  el.viewerViewport.addEventListener('pointerdown', (ev) => {
+    if (
+      state.liveTextMode &&
+      (state.livePopupBlockId || state.selectedBlockId) &&
+      !ev.target.closest('[data-live-text]') &&
+      !ev.target.closest('#liveSelectionCard') &&
+      !ev.target.closest('button, input, textarea, select, a')
+    ) {
+      closeLiveBubblePopup();
+    }
+  });
+}
 
 el.btnDrawBoxMode.addEventListener('click', () => setDrawMode(!state.drawMode));
 el.btnExitDrawMode.addEventListener('click', () => setDrawMode(false));
@@ -1320,21 +1964,9 @@ el.btnRedetectPage.addEventListener('click', () => {
   detectBoxesForAllPages([page]);
 });
 
-el.btnZoomIn.addEventListener('click', () => {
-  state.fitMode = false;
-  state.zoom = Math.min(2.5, +(state.zoom + 0.2).toFixed(2));
-  applyStageZoom(getSelectedPage());
-});
-el.btnZoomOut.addEventListener('click', () => {
-  state.fitMode = false;
-  state.zoom = Math.max(0.3, +(state.zoom - 0.2).toFixed(2));
-  applyStageZoom(getSelectedPage());
-});
-el.btnZoomFit.addEventListener('click', () => {
-  state.fitMode = true;
-  state.zoom = 1.0;
-  applyStageZoom(getSelectedPage());
-});
+el.btnZoomIn.addEventListener('click', () => stepStageZoom(1));
+el.btnZoomOut.addEventListener('click', () => stepStageZoom(-1));
+el.btnZoomFit.addEventListener('click', () => resetStageZoomToFit());
 
 // Distraction-Free Fullscreen Manga Reader Controller
 let fsHudIdleTimer = null;
@@ -1353,6 +1985,21 @@ function wakeFullscreenHud() {
 function setViewerFullscreen(enabled) {
   const next = Boolean(enabled);
   if (next === state.isViewerFullscreen) return;
+
+  // Preserve current normalized panel center across Normal <-> Fullscreen transitions when zoomed
+  const page = getSelectedPage();
+  let savedRelX = 0.5;
+  let savedRelY = 0;
+  const preserveZoomFocus = Boolean(page && !state.fitMode && el.viewerViewport && el.activePageImage);
+  if (preserveZoomFocus) {
+    const vpR = el.viewerViewport.getBoundingClientRect();
+    const imgR = el.activePageImage.getBoundingClientRect();
+    if (imgR.width > 10 && imgR.height > 10) {
+      savedRelX = Math.max(0, Math.min(1, (vpR.left + el.viewerViewport.clientWidth * 0.5 - imgR.left) / imgR.width));
+      savedRelY = Math.max(0, Math.min(1, (vpR.top + el.viewerViewport.clientHeight * 0.5 - imgR.top) / imgR.height));
+    }
+  }
+
   state.isViewerFullscreen = next;
 
   // Website-only viewport fullscreen (expands viewer across 100% of the browser tab without triggering OS browser fullscreen)
@@ -1362,7 +2009,9 @@ function setViewerFullscreen(enabled) {
     state.preFsShowBoxes = state.showBoxes;
     // Hide noisy boundary boxes in fullscreen so manga art is 100% clutter-free
     state.showBoxes = false;
-    state.selectedBlockId = null;
+    if (!state.liveTextMode) {
+      state.selectedBlockId = null;
+    }
     document.body.classList.add('is-reader-fullscreen');
     if (el.fsFloatingHud) {
       el.fsFloatingHud.classList.remove('hidden');
@@ -1387,9 +2036,41 @@ function setViewerFullscreen(enabled) {
     el.btnToggleFullscreen.setAttribute('aria-pressed', next ? 'true' : 'false');
   }
 
-  applyStageZoom(getSelectedPage());
+  applyStageZoom(page);
+  if (el.viewerViewport) {
+    if (preserveZoomFocus && el.activePageImage) {
+      const restoreCenter = () => {
+        if (!el.viewerViewport || !el.activePageImage) return;
+        applyStageZoom(getSelectedPage());
+        const vpR2 = el.viewerViewport.getBoundingClientRect();
+        const imgR2 = el.activePageImage.getBoundingClientRect();
+        const targetX = imgR2.left + savedRelX * imgR2.width;
+        const targetY = imgR2.top + savedRelY * imgR2.height;
+        el.viewerViewport.scrollLeft = Math.max(
+          0,
+          el.viewerViewport.scrollLeft + (targetX - (vpR2.left + el.viewerViewport.clientWidth * 0.5))
+        );
+        el.viewerViewport.scrollTop = Math.max(
+          0,
+          el.viewerViewport.scrollTop + (targetY - (vpR2.top + el.viewerViewport.clientHeight * 0.5))
+        );
+        syncViewportGrabCursor();
+      };
+      restoreCenter();
+      requestAnimationFrame(restoreCenter);
+    } else {
+      el.viewerViewport.scrollTop = 0;
+      el.viewerViewport.scrollLeft = 0;
+      requestAnimationFrame(() => applyStageZoom(getSelectedPage()));
+    }
+  }
   syncBoxesToggleUI();
   renderOverlayBoxes();
+  if (!next && state.selectedBlockId && typeof syncSelectedBubbleCardInPlace === 'function') {
+    requestAnimationFrame(() => {
+      syncSelectedBubbleCardInPlace(state.selectedBlockId, { scrollCard: true });
+    });
+  }
   if (typeof positionOpenLivePopup === 'function') {
     requestAnimationFrame(positionOpenLivePopup);
   }
@@ -1423,6 +2104,27 @@ if (el.btnFsNextPage) {
     goToPageByOffset(1, { animateSlide: true });
   });
 }
+if (el.btnFsZoomOut) {
+  el.btnFsZoomOut.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    wakeFullscreenHud();
+    stepStageZoom(-1);
+  });
+}
+if (el.btnFsZoomFit) {
+  el.btnFsZoomFit.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    wakeFullscreenHud();
+    resetStageZoomToFit();
+  });
+}
+if (el.btnFsZoomIn) {
+  el.btnFsZoomIn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    wakeFullscreenHud();
+    stepStageZoom(1);
+  });
+}
 if (el.btnFsSelectText) {
   el.btnFsSelectText.addEventListener('click', (ev) => {
     ev.stopPropagation();
@@ -1435,17 +2137,29 @@ if (el.viewerSection) {
   el.viewerSection.addEventListener('pointerdown', wakeFullscreenHud, { passive: true });
 }
 
-// Right Panel Tabs, Sidebar Review Filter & Export Actions
+// Right Panel Tabs, Toolbar/Banner Review Jump, Sidebar Review Filter & Export Actions
 el.tabBtnAllText.addEventListener('click', () => setActiveTab('all'));
 el.tabBtnPageBubbles.addEventListener('click', () => setActiveTab('bubbles'));
 if (el.tabBtnReviewQueue) {
-  el.tabBtnReviewQueue.addEventListener('click', () => setActiveTab('review'));
+  el.tabBtnReviewQueue.addEventListener('click', () => openReviewAndFocusFirst());
+}
+if (el.tabBtnSavedVocab) {
+  el.tabBtnSavedVocab.addEventListener('click', () => setActiveTab('vocab'));
+}
+if (el.btnToolbarReviewJump) {
+  el.btnToolbarReviewJump.addEventListener('click', () => openReviewAndFocusFirst());
+}
+if (el.btnBannerOpenReview) {
+  el.btnBannerOpenReview.addEventListener('click', () => openReviewAndFocusFirst());
+}
+if (el.btnBannerNextReview) {
+  el.btnBannerNextReview.addEventListener('click', () => jumpToLowConfidenceByStep(1));
 }
 if (el.btnSidebarReviewFilter) {
   el.btnSidebarReviewFilter.addEventListener('click', () => {
     state.filterReviewPagesOnly = !state.filterReviewPagesOnly;
-    if (state.filterReviewPagesOnly && state.activeTab !== 'review') {
-      setActiveTab('review');
+    if (state.filterReviewPagesOnly) {
+      openReviewAndFocusFirst();
     }
     renderPageList();
   });
@@ -1455,6 +2169,37 @@ el.chkIncludeHeaders.addEventListener('change', () => {
   state.includeHeaders = el.chkIncludeHeaders.checked;
   el.fullMangaTextarea.value = buildCombinedMangaTranscript();
 });
+
+// Selecting text inside Full Manga transcript also highlights the corresponding page bubble & Page Bubbles card
+if (el.fullMangaTextarea) {
+  const syncFromFullTranscriptSelection = () => {
+    if (typeof findTranscriptBlockAtOffset !== 'function') return;
+    const s = el.fullMangaTextarea.selectionStart;
+    const e = el.fullMangaTextarea.selectionEnd;
+    if (typeof s !== 'number' || typeof e !== 'number' || e <= s) return;
+    const hit = findTranscriptBlockAtOffset(s, e);
+    if (!hit || !hit.blk || !hit.page) return;
+    if (hit.page.id !== state.selectedPageId) {
+      state.selectedPageId = hit.page.id;
+      state.livePopupBlockId = null;
+      if (el.liveSelectionCard) el.liveSelectionCard.classList.add('hidden');
+      syncSelectedPageCardInSidebar(true);
+      renderActivePageStage();
+    }
+    if (state.selectedBlockId !== hit.blk.id) {
+      state.selectedBlockId = hit.blk.id;
+      syncToolbarBoxDeleteBtn();
+      renderOverlayBoxes();
+      scrollViewportToBlockIfNeeded(hit.page, hit.blk);
+      if (typeof syncSelectedBubbleCardInPlace === 'function') {
+        syncSelectedBubbleCardInPlace(hit.blk.id, { scrollCard: true });
+      }
+    }
+  };
+  el.fullMangaTextarea.addEventListener('select', syncFromFullTranscriptSelection);
+  el.fullMangaTextarea.addEventListener('mouseup', syncFromFullTranscriptSelection);
+  el.fullMangaTextarea.addEventListener('keyup', syncFromFullTranscriptSelection);
+}
 
 el.btnFontSmaller.addEventListener('click', () => {
   state.jpFontSize = Math.max(12, state.jpFontSize - 2);
@@ -1580,6 +2325,7 @@ updateSettingsSummaryChip();
 // Initialize saved Gemini key/config, parallel worker pool, local server probe, & sample pages
 el.inputBackendUrl.value = state.nativeBackend.url;
 loadSavedGeminiConfig();
+loadSavedVocabConfig();
 ensureAiWorker();
 probeNativeBackend(state.nativeBackend.url, true);
 loadBuiltInSamples();
