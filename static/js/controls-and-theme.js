@@ -247,35 +247,35 @@ function triggerBlobDownload(filename, mime, content) {
 let suppressOutsideSettingsCloseUntil = 0;
 
 function updateSettingsHelperTexts() {
+  if (state.detectorMode !== 'rtdetr-int8' && state.detectorMode !== 'ctd-onnx') {
+    state.detectorMode = 'rtdetr-int8';
+    if (el.selectDetector) el.selectDetector.value = 'rtdetr-int8';
+  }
+  if (state.ocrEngine !== 'manga-ocr-cpt') {
+    state.ocrEngine = 'manga-ocr-cpt';
+    if (el.selectOcrEngine) el.selectOcrEngine.value = 'manga-ocr-cpt';
+  }
   if (el.helperDetector) {
-    el.helperDetector.textContent = state.detectorMode === 'rtdetr-int8'
-      ? 'RT-DETRv2 · 11 MB · Default'
-      : state.detectorMode === 'ctd-onnx'
-      ? 'Mokuro YOLOv5 · 95 MB · WebGPU'
-      : state.detectorMode === 'bubble-heuristic'
-      ? 'Instant pixel cluster · 0 MB'
-      : 'Single pre-cropped bubble';
+    el.helperDetector.textContent = state.detectorMode === 'ctd-onnx'
+      ? '95 MB · WebGPU'
+      : '11 MB INT8 · Default';
   }
   if (el.helperOcrEngine) {
-    el.helperOcrEngine.textContent = state.ocrEngine === 'manga-ocr-cpt'
-      ? 'JP-only SOTA · 0.86% CER'
-      : state.ocrEngine === 'manga-ocr'
-      ? 'Classic base · 4.81% CER'
-      : 'Lightweight fallback · ~15 MB';
+    el.helperOcrEngine.textContent = '0.86% CER · JP-only';
   }
   if (el.helperReadingOrder) {
     el.helperReadingOrder.textContent = state.readingOrder === 'rtl'
-      ? 'Japanese manga panels'
+      ? 'Right → Left'
       : state.readingOrder === 'ttb'
-      ? 'Vertical webtoon strips'
-      : 'Western comic panels';
+      ? 'Top → Bottom'
+      : 'Left → Right';
   }
   if (el.helperWorkerPool) {
     el.helperWorkerPool.textContent = state.workerPoolSetting === 'auto'
-      ? 'Auto-scaled (' + DEFAULT_DET_WORKERS + ' threads)'
+      ? 'Auto (' + DEFAULT_DET_WORKERS + ' threads)'
       : state.workerPoolSetting === '1'
-      ? 'Single worker · Low RAM'
-      : state.workerPoolSetting + ' concurrent OS threads';
+      ? '1 thread · Low RAM'
+      : state.workerPoolSetting + ' threads';
   }
   if (el.chkAutoPruneNonJp && el.chkAutoPruneNonJp.parentElement) {
     el.chkAutoPruneNonJp.parentElement.classList.toggle('is-checked', Boolean(state.autoPruneNonJp));
@@ -284,19 +284,13 @@ function updateSettingsHelperTexts() {
 
 function updateSettingsSummaryChip() {
   updateSettingsHelperTexts();
-  const geminiSuffix = (state.gemini && state.gemini.apiKey) ? ' · Gemini' : '';
+  const geminiSuffix = (state.gemini && state.gemini.apiKey) ? ' · AI' : '';
   if (state.nativeBackend.connected) {
-    const acc = (state.nativeBackend.info && state.nativeBackend.info.accelerator) || 'Native Server';
+    const acc = (state.nativeBackend.info && state.nativeBackend.info.accelerator) || 'Server';
     el.settingsSummaryChip.textContent = acc + ' · ' + state.readingOrder.toUpperCase() + geminiSuffix;
     return;
   }
-  const detShort = state.detectorMode === 'rtdetr-int8'
-    ? 'Turbo INT8'
-    : state.detectorMode === 'ctd-onnx'
-    ? 'Mokuro CTD'
-    : state.detectorMode === 'bubble-heuristic'
-    ? 'Heuristic'
-    : 'Whole Image';
+  const detShort = state.detectorMode === 'ctd-onnx' ? 'Mokuro CTD' : 'RT-DETRv2';
   const wCount = state.workerPoolSetting === 'auto'
     ? DEFAULT_DET_WORKERS + 'x'
     : state.workerPoolSetting + 'x';
@@ -1330,7 +1324,7 @@ function syncLiveSelectionUI() {
   if (el.liveSelectionCard) {
     el.liveSelectionCard.classList.toggle(
       'has-study-open',
-      Boolean(state.showPopupRomaji || showPopupEn || showPopupBd)
+      Boolean(state.showPopupRomaji || state.showPopupInstantVocab || showPopupEn || showPopupBd)
     );
   }
 
@@ -1366,6 +1360,125 @@ function syncLiveSelectionUI() {
         el.liveSelRomajiLabel.textContent = sub
           ? 'Selected Romaji · Offline'
           : (romRes.ready ? 'Offline Romaji (IPADIC)' : 'Offline Romaji (Loading dict…)');
+      }
+    }
+  }
+
+  // Sync Popup Instant Vocab button & 0ms Offline JMdict/Kuromoji Vocab sub-panel
+  if (el.btnTogglePopupInstantVocab) {
+    el.btnTogglePopupInstantVocab.classList.toggle('is-active', Boolean(state.showPopupInstantVocab));
+    el.btnTogglePopupInstantVocab.setAttribute('aria-pressed', state.showPopupInstantVocab ? 'true' : 'false');
+  }
+  if (el.liveSelInstantVocabWrap && el.liveSelInstantVocabBody) {
+    el.liveSelInstantVocabWrap.classList.toggle('hidden', !state.showPopupInstantVocab);
+    if (state.showPopupInstantVocab && typeof analyzeJapaneseVocabInstant === 'function') {
+      const targetIvJp = (sub || info.text || '').trim();
+      const ivRes = analyzeJapaneseVocabInstant(targetIvJp, () => {
+        if (state.liveTextMode && state.livePopupBlockId === info.blk.id && state.showPopupInstantVocab) {
+          el.liveSelInstantVocabBody.removeAttribute('data-iv-render-key');
+          syncLiveSelectionUI();
+          positionOpenLivePopup();
+        }
+      });
+      const ivList = Array.isArray(ivRes.vocab) ? ivRes.vocab : [];
+      const ivContentOnly = ivList.filter((v) => !v.isParticle);
+      const ivSaveTargets = ivContentOnly.length > 0 ? ivContentOnly : ivList;
+
+      if (el.liveSelInstantVocabLabel) {
+        el.liveSelInstantVocabLabel.textContent = (sub ? 'Selected Vocab · ' : 'Instant Vocab · ') + ivRes.dictSource;
+      }
+      if (el.btnPopupSaveAllInstantVocab) {
+        el.btnPopupSaveAllInstantVocab.classList.toggle('hidden', ivSaveTargets.length === 0);
+        if (ivSaveTargets.length > 0) {
+          const allIvSaved = ivSaveTargets.every((v) => isVocabItemSaved(v));
+          el.btnPopupSaveAllInstantVocab.classList.toggle('is-saved', allIvSaved);
+          el.btnPopupSaveAllInstantVocab.textContent = allIvSaved
+            ? '✓ All Saved'
+            : ('+ Save All (' + ivSaveTargets.length + ')');
+        }
+      }
+
+      const ivRenderKey = info.blk.id + '::' + targetIvJp + '::' + ivRes.dictSource + '::' + ivList.length;
+      if (el.liveSelInstantVocabBody.getAttribute('data-iv-render-key') !== ivRenderKey) {
+        el.liveSelInstantVocabBody.setAttribute('data-iv-render-key', ivRenderKey);
+        el.liveSelInstantVocabBody.innerHTML = '';
+        const ivMeta = {
+          contextJp: info.text,
+          pageId: info.page.id,
+          pageName: info.page.name,
+          bubbleIndex: info.index,
+          blockId: info.blk.id
+        };
+        ivList.forEach((v) => {
+          const row = document.createElement('div');
+          row.className = 'rounded bg-white border border-slate-200 px-2 py-1 text-xs';
+
+          const topLine = document.createElement('div');
+          topLine.className = 'flex flex-wrap items-center justify-between gap-1';
+
+          const leftW = document.createElement('div');
+          leftW.className = 'flex flex-wrap items-baseline gap-1';
+          const surf = document.createElement('span');
+          surf.className = 'jp-text font-bold text-slate-900';
+          surf.textContent = v.surface || '';
+          leftW.appendChild(surf);
+
+          if (v.reading && v.reading !== v.surface) {
+            const rd = document.createElement('span');
+            rd.className = 'jp-text text-[11px] text-indigo-700 font-medium';
+            rd.textContent = '【' + v.reading + '】';
+            leftW.appendChild(rd);
+          }
+          if (v.romaji) {
+            const rm = document.createElement('span');
+            rm.className = 'italic text-[11px] text-slate-500';
+            rm.textContent = v.romaji;
+            leftW.appendChild(rm);
+          }
+          if (v.dictForm && v.dictForm !== v.surface) {
+            const df = document.createElement('span');
+            df.className = 'jp-text text-[10px] text-slate-500 bg-slate-100 px-1 rounded';
+            df.textContent = 'dict: ' + v.dictForm;
+            leftW.appendChild(df);
+          }
+          topLine.appendChild(leftW);
+
+          const rightTags = document.createElement('div');
+          rightTags.className = 'flex items-center gap-1 ml-auto shrink-0';
+          if (v.pos) {
+            const pos = document.createElement('span');
+            pos.className = 'px-1.5 py-0.2 rounded bg-teal-100/80 text-teal-900 text-[10px] font-semibold shrink-0';
+            pos.textContent = v.pos;
+            rightTags.appendChild(pos);
+          }
+          const vKey = normalizeVocabMatchKey(v);
+          const savedNow = isVocabItemSaved(v);
+          const btnSaveIv = document.createElement('button');
+          btnSaveIv.type = 'button';
+          btnSaveIv.setAttribute('data-vocab-save-btn', '1');
+          btnSaveIv.setAttribute('data-vocab-save-key', vKey);
+          btnSaveIv.setAttribute('aria-pressed', savedNow ? 'true' : 'false');
+          btnSaveIv.className = 'md-vocab-save-btn' + (savedNow ? ' is-saved' : '');
+          btnSaveIv.textContent = savedNow ? '✓ Saved' : '+ Save';
+          btnSaveIv.addEventListener('pointerdown', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+          });
+          btnSaveIv.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            toggleSaveVocabItem(v, ivMeta);
+          });
+          rightTags.appendChild(btnSaveIv);
+          topLine.appendChild(rightTags);
+
+          const mean = document.createElement('p');
+          mean.className = 'text-[11px] text-slate-700 leading-snug mt-0.5';
+          mean.textContent = v.meaning || '';
+          row.appendChild(topLine);
+          row.appendChild(mean);
+          el.liveSelInstantVocabBody.appendChild(row);
+        });
       }
     }
   }
@@ -1780,6 +1893,52 @@ if (el.btnTogglePopupRomaji) {
     } catch (_e) {}
     syncLiveSelectionUI();
     positionOpenLivePopup();
+  });
+}
+if (el.btnTogglePopupInstantVocab) {
+  state.showPopupInstantVocab = false;
+  try {
+    const savedIv = localStorage.getItem('ankisuru_popup_instant_vocab_v1');
+    if (savedIv === '1') state.showPopupInstantVocab = true;
+  } catch (_e) {}
+  el.btnTogglePopupInstantVocab.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnTogglePopupInstantVocab.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    state.showPopupInstantVocab = !state.showPopupInstantVocab;
+    try {
+      localStorage.setItem('ankisuru_popup_instant_vocab_v1', state.showPopupInstantVocab ? '1' : '0');
+    } catch (_e) {}
+    syncLiveSelectionUI();
+    positionOpenLivePopup();
+  });
+}
+if (el.btnPopupSaveAllInstantVocab) {
+  el.btnPopupSaveAllInstantVocab.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  el.btnPopupSaveAllInstantVocab.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const info = getActivePopupBlockInfo();
+    if (!info || typeof analyzeJapaneseVocabInstant !== 'function') return;
+    const sub = getPopupHighlightedSubstring();
+    const targetJp = (sub || info.text || '').trim();
+    const ivRes = analyzeJapaneseVocabInstant(targetJp);
+    const ivList = Array.isArray(ivRes.vocab) ? ivRes.vocab : [];
+    const contentOnly = ivList.filter((v) => !v.isParticle);
+    const targets = contentOnly.length > 0 ? contentOnly : ivList;
+    saveAllVocabFromList(targets, {
+      contextJp: info.text,
+      pageId: info.page.id,
+      pageName: info.page.name,
+      bubbleIndex: info.index,
+      blockId: info.blk.id
+    });
   });
 }
 if (el.btnPopupBreakdown) {
@@ -2446,5 +2605,10 @@ ensureAiWorker();
 probeNativeBackend(state.nativeBackend.url, true);
 loadBuiltInSamples();
 if (typeof ensureOfflineRomajiEngine === 'function') {
-  setTimeout(() => { ensureOfflineRomajiEngine(); }, 250);
+  setTimeout(() => {
+    ensureOfflineRomajiEngine();
+    if (typeof ensureInstantVocabDictionary === 'function') {
+      ensureInstantVocabDictionary();
+    }
+  }, 250);
 }

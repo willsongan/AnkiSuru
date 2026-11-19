@@ -764,14 +764,14 @@ async function spawnOneWorkerSlot(slotIndex) {
 function updateAccelBadgeText() {
   if (!el.accelStatusBadge) return;
   if (state.nativeBackend.connected && state.nativeBackend.info) {
-    el.accelStatusBadge.textContent = 'AnkiSuru Server: ' + (state.nativeBackend.info.accelerator || 'Connected');
+    el.accelStatusBadge.textContent = 'Server · ' + (state.nativeBackend.info.accelerator || 'Connected');
     return;
   }
   const n = runtime.workerSlots.length;
   if (n > 0) {
-    el.accelStatusBadge.textContent = (runtime.hasWebGpu ? 'WebGPU + ' : '') + n + ' Parallel Workers';
+    el.accelStatusBadge.textContent = (runtime.hasWebGpu ? 'WebGPU · ' : '') + n + (n === 1 ? ' Worker' : ' Workers');
   } else if (runtime.workerFlavor === 'none') {
-    el.accelStatusBadge.textContent = 'Main-Thread Fallback';
+    el.accelStatusBadge.textContent = 'Main Thread';
   }
 }
 
@@ -843,13 +843,6 @@ function terminateAiWorkerForStop() {
   const waiting = runtime.slotWaiters.splice(0, runtime.slotWaiters.length);
   for (const waiter of waiting) {
     try { waiter.reject(new Error('ABORTED')); } catch (_e) { /* ignore */ }
-  }
-
-  // Also terminate active Tesseract workers if Tesseract mode was mid-run
-  if (runtime.tesseractScheduler) {
-    try { runtime.tesseractScheduler.terminate(); } catch (_e) { /* ignore */ }
-    runtime.tesseractScheduler = null;
-    runtime.tesseractWorkers = [];
   }
 
   state.activeOcrBlockIds.clear();
@@ -961,8 +954,8 @@ async function probeNativeBackend(customUrl, silent) {
   if (el.backendStatusText) {
     el.backendStatusText.className = 'text-[11px] font-medium text-slate-500';
     el.backendStatusText.textContent = silent
-      ? 'Browser Multi-Worker Pool active (run local server for native GPU / all-core speed)'
-      : 'No server at ' + cleanUrl + ' — using Browser Multi-Worker Pool';
+      ? 'Browser workers active (connect for local GPU)'
+      : 'No server at ' + cleanUrl + ' · using browser workers';
   }
   updateAccelBadgeText();
   if (typeof updateSettingsSummaryChip === 'function') updateSettingsSummaryChip();

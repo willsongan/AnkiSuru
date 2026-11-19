@@ -139,11 +139,11 @@ function renderPageList() {
     ? (flaggedPagesCount + ' of ' + count + ' pages <90%')
     : (count + (count === 1 ? ' page loaded' : ' pages loaded'));
   el.detectAllBoxesLabel.textContent = count > 0
-    ? 'Detect All Boxes (' + count + ')'
-    : 'Detect All Boxes';
+    ? 'Detect All (' + count + ')'
+    : 'Detect All';
   el.extractAllLabel.textContent = count > 0
-    ? 'Extract All Japanese Text (' + count + ')'
-    : 'Extract All Japanese Text';
+    ? 'Extract All (' + count + ')'
+    : 'Extract All';
   el.btnDetectAllBoxes.disabled = state.isExtracting || count === 0;
   el.btnExtractAll.disabled = state.isExtracting || count === 0;
   el.sampleNoticeBanner.classList.toggle('hidden', !state.isSampleSet || count === 0);
@@ -3036,7 +3036,7 @@ function renderRightPanel() {
     wrap.className = 'text-center py-8 px-4 space-y-2';
     const msg = document.createElement('p');
     msg.className = 'text-xs text-slate-500';
-    msg.textContent = 'No speech bubbles detected yet on this page. Click "Extract Current Page" or "+ Draw Box".';
+    msg.textContent = 'No speech bubbles detected yet on this page. Click "Extract Page" or "+ Draw Box".';
     wrap.appendChild(msg);
     el.panelPageBubbles.appendChild(wrap);
     return;
@@ -3069,6 +3069,7 @@ function renderRightPanel() {
 
   const extractedBlocksOnPage = page.blocks.filter((b) => (b.text || '').trim().length > 0);
   const allPageRomajiOpen = extractedBlocksOnPage.length > 0 && extractedBlocksOnPage.every((b) => Boolean(b.showRomaji));
+  const allPageInstantVocabOpen = extractedBlocksOnPage.length > 0 && extractedBlocksOnPage.every((b) => Boolean(b.showInstantVocab));
 
   const btnTogglePageRomajiAll = document.createElement('button');
   btnTogglePageRomajiAll.type = 'button';
@@ -3089,6 +3090,26 @@ function renderRightPanel() {
     renderRightPanel();
   });
 
+  const btnTogglePageInstantVocabAll = document.createElement('button');
+  btnTogglePageInstantVocabAll.type = 'button';
+  btnTogglePageInstantVocabAll.disabled = extractedCountOnPage === 0;
+  btnTogglePageInstantVocabAll.setAttribute('data-page-instant-vocab-all', '1');
+  btnTogglePageInstantVocabAll.className =
+    'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition disabled:opacity-45 disabled:pointer-events-none ' +
+    (allPageInstantVocabOpen
+      ? 'border-teal-400 bg-teal-100/80 text-teal-900 hover:bg-teal-200/70'
+      : 'border-slate-200 bg-white text-slate-700 hover:bg-teal-50');
+  btnTogglePageInstantVocabAll.textContent = allPageInstantVocabOpen ? 'Hide All Vocab' : 'Instant Vocab All';
+  btnTogglePageInstantVocabAll.title = 'Toggle instant offline JMdict + Kuromoji vocabulary breakdown across all bubbles on this page (0ms, no API key)';
+  btnTogglePageInstantVocabAll.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const nextVal = !allPageInstantVocabOpen;
+    extractedBlocksOnPage.forEach((b) => {
+      b.showInstantVocab = nextVal;
+    });
+    renderRightPanel();
+  });
+
   const btnTranslatePageAll = document.createElement('button');
   btnTranslatePageAll.type = 'button';
   btnTranslatePageAll.disabled = extractedCountOnPage === 0 || state.gemini.isTranslatingPage;
@@ -3104,6 +3125,7 @@ function renderRightPanel() {
   });
 
   topRightStudyBtns.appendChild(btnTogglePageRomajiAll);
+  topRightStudyBtns.appendChild(btnTogglePageInstantVocabAll);
   topRightStudyBtns.appendChild(btnTranslatePageAll);
   studyTopStrip.appendChild(keyBadgeBtn);
   studyTopStrip.appendChild(topRightStudyBtns);
@@ -3375,6 +3397,7 @@ function renderRightPanel() {
       (Array.isArray(study.breakdown.grammar) && study.breakdown.grammar.length > 0)
     ));
     const showInstantRomaji = Boolean(blk.showRomaji) && hasExtractedJp;
+    const showInstantVocab = Boolean(blk.showInstantVocab) && hasExtractedJp;
 
     const studyBar = document.createElement('div');
     studyBar.className = 'mt-2 flex flex-wrap items-center justify-between gap-1.5';
@@ -3453,7 +3476,26 @@ function renderRightPanel() {
       toggleBlockInBatchQueue(page.id, blk.id);
     });
 
+    const btnInstantVocab = document.createElement('button');
+    btnInstantVocab.type = 'button';
+    btnInstantVocab.disabled = !hasExtractedJp;
+    btnInstantVocab.setAttribute('data-bubble-instant-vocab-toggle', '1');
+    btnInstantVocab.setAttribute('aria-pressed', showInstantVocab ? 'true' : 'false');
+    btnInstantVocab.className =
+      'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition disabled:opacity-40 disabled:pointer-events-none ' +
+      (showInstantVocab
+        ? 'border-teal-400 bg-teal-100/80 text-teal-900 hover:bg-teal-200/70'
+        : 'border-slate-200 bg-white text-slate-700 hover:bg-teal-50');
+    btnInstantVocab.textContent = showInstantVocab ? 'Hide Vocab' : 'Instant Vocab';
+    btnInstantVocab.title = 'Toggle instant offline JMdict + Kuromoji vocabulary breakdown (0ms, no API key required)';
+    btnInstantVocab.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      blk.showInstantVocab = !blk.showInstantVocab;
+      renderRightPanel();
+    });
+
     leftStudyBtns.appendChild(btnInstantRomaji);
+    leftStudyBtns.appendChild(btnInstantVocab);
     leftStudyBtns.appendChild(btnBreakdown);
     leftStudyBtns.appendChild(btnBatchCard);
 
@@ -3528,6 +3570,125 @@ function renderRightPanel() {
       romRow.appendChild(btnCopyRom);
       romBox.appendChild(romRow);
       card.appendChild(romBox);
+    }
+
+    // Render Instant Offline Vocabulary Breakdown Box (when toggled on for this bubble)
+    if (showInstantVocab && typeof analyzeJapaneseVocabInstant === 'function') {
+      const ivBox = document.createElement('div');
+      ivBox.setAttribute('data-bubble-instant-vocab-box', '1');
+      ivBox.className = 'mt-2 rounded-lg border border-teal-200 bg-teal-50/40 p-2.5 space-y-1.5 text-xs';
+
+      const ivRes = analyzeJapaneseVocabInstant(jpTrimmed, () => {
+        if (blk.showInstantVocab && state.selectedPageId === page.id) {
+          renderRightPanel();
+        }
+      });
+
+      const ivVocab = Array.isArray(ivRes.vocab) ? ivRes.vocab : [];
+      const contentOnly = ivVocab.filter((v) => !v.isParticle);
+      const saveTargetList = contentOnly.length > 0 ? contentOnly : ivVocab;
+      const ivMeta = {
+        contextJp: jpTrimmed,
+        pageId: page.id,
+        pageName: page.name,
+        bubbleIndex: idx + 1,
+        blockId: blk.id
+      };
+
+      const ivHead = document.createElement('div');
+      ivHead.className = 'flex items-center justify-between gap-2';
+      const ivLbl = document.createElement('span');
+      ivLbl.className = 'text-[10px] font-bold uppercase tracking-wider text-teal-800';
+      ivLbl.textContent = 'Instant Vocab · ' + ivRes.dictSource;
+      ivHead.appendChild(ivLbl);
+
+      if (saveTargetList.length > 0) {
+        const allIvKeys = saveTargetList.map((v) => normalizeVocabMatchKey(v)).filter(Boolean).join('|');
+        const allIvSaved = saveTargetList.every((v) => isVocabItemSaved(v));
+        const btnSaveAllIv = document.createElement('button');
+        btnSaveAllIv.type = 'button';
+        btnSaveAllIv.setAttribute('data-vocab-save-all-keys', allIvKeys);
+        btnSaveAllIv.className = 'md-vocab-save-btn' + (allIvSaved ? ' is-saved' : '');
+        btnSaveAllIv.textContent = allIvSaved ? '✓ All Saved' : ('+ Save All (' + saveTargetList.length + ')');
+        btnSaveAllIv.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          saveAllVocabFromList(saveTargetList, ivMeta);
+        });
+        ivHead.appendChild(btnSaveAllIv);
+      }
+      ivBox.appendChild(ivHead);
+
+      const ivList = document.createElement('div');
+      ivList.className = 'space-y-1';
+      ivVocab.forEach((v) => {
+        const row = document.createElement('div');
+        row.className = 'rounded-md bg-white border border-slate-200 px-2 py-1.5 flex flex-col gap-0.5';
+
+        const top = document.createElement('div');
+        top.className = 'flex flex-wrap items-center justify-between gap-1';
+
+        const leftW = document.createElement('div');
+        leftW.className = 'flex flex-wrap items-baseline gap-1.5';
+        const surfEl = document.createElement('span');
+        surfEl.className = 'jp-text font-bold text-slate-900 text-xs';
+        surfEl.textContent = v.surface || '';
+        leftW.appendChild(surfEl);
+
+        if (v.reading && v.reading !== v.surface) {
+          const rdEl = document.createElement('span');
+          rdEl.className = 'jp-text text-[11px] text-indigo-700 font-medium';
+          rdEl.textContent = '【' + v.reading + '】';
+          leftW.appendChild(rdEl);
+        }
+        if (v.romaji) {
+          const rmEl = document.createElement('span');
+          rmEl.className = 'italic text-[11px] text-slate-500';
+          rmEl.textContent = v.romaji;
+          leftW.appendChild(rmEl);
+        }
+        if (v.dictForm && v.dictForm !== v.surface) {
+          const dfEl = document.createElement('span');
+          dfEl.className = 'jp-text text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.2 rounded';
+          dfEl.textContent = 'dict: ' + v.dictForm;
+          leftW.appendChild(dfEl);
+        }
+        top.appendChild(leftW);
+
+        const rightTags = document.createElement('div');
+        rightTags.className = 'flex items-center gap-1 ml-auto shrink-0';
+        if (v.pos) {
+          const posEl = document.createElement('span');
+          posEl.className = 'px-1.5 py-0.2 rounded bg-teal-100/80 text-teal-900 text-[10px] font-semibold shrink-0';
+          posEl.textContent = v.pos;
+          rightTags.appendChild(posEl);
+        }
+        const vKey = normalizeVocabMatchKey(v);
+        const savedNow = isVocabItemSaved(v);
+        const btnSv = document.createElement('button');
+        btnSv.type = 'button';
+        btnSv.setAttribute('data-vocab-save-btn', '1');
+        btnSv.setAttribute('data-vocab-save-key', vKey);
+        btnSv.setAttribute('aria-pressed', savedNow ? 'true' : 'false');
+        btnSv.className = 'md-vocab-save-btn' + (savedNow ? ' is-saved' : '');
+        btnSv.textContent = savedNow ? '✓ Saved' : '+ Save';
+        btnSv.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          toggleSaveVocabItem(v, ivMeta);
+        });
+        rightTags.appendChild(btnSv);
+        top.appendChild(rightTags);
+
+        const meanEl = document.createElement('p');
+        meanEl.className = 'text-[11px] text-slate-700 leading-snug';
+        meanEl.textContent = v.meaning || '';
+
+        row.appendChild(top);
+        row.appendChild(meanEl);
+        ivList.appendChild(row);
+      });
+
+      ivBox.appendChild(ivList);
+      card.appendChild(ivBox);
     }
 
     // Render English + Verified Romaji Translation Box

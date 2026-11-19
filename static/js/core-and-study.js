@@ -26,7 +26,7 @@ const MODEL_URLS = {
 };
 
 function isMangaOcrFamily(engineName) {
-  return engineName === 'manga-ocr-cpt' || engineName === 'manga-ocr';
+  return !engineName || engineName === 'manga-ocr-cpt';
 }
 
 function normalizeConf01(raw) {
@@ -226,6 +226,7 @@ const state = {
   batchStudyExpanded: false,
   isRunningBatchStudy: false,
   showPopupRomaji: false,
+  showPopupInstantVocab: false,
   isViewerFullscreen: false,
   preFsShowBoxes: true,
   drawMode: false,
@@ -269,8 +270,6 @@ const runtime = {
   workerReqSeq: 0,
   mainFallbackSessions: { rtdetr: null, ctd: null, mocrEnc: null, mocrDec: null },
   hasWebGpu: false,
-  tesseractScheduler: null,
-  tesseractWorkers: [],
   activeFetchControllers: new Set()
 };
 
@@ -380,6 +379,7 @@ const el = {
   btnVerifyPopupBubble: document.getElementById('btnVerifyPopupBubble'),
   btnDeletePopupBubble: document.getElementById('btnDeletePopupBubble'),
   btnTogglePopupRomaji: document.getElementById('btnTogglePopupRomaji'),
+  btnTogglePopupInstantVocab: document.getElementById('btnTogglePopupInstantVocab'),
   btnPopupBreakdown: document.getElementById('btnPopupBreakdown'),
   btnPopupBatchToggle: document.getElementById('btnPopupBatchToggle'),
   btnPopupSaveWord: document.getElementById('btnPopupSaveWord'),
@@ -393,6 +393,10 @@ const el = {
   liveSelRomajiLabel: document.getElementById('liveSelRomajiLabel'),
   btnCopyPopupRomaji: document.getElementById('btnCopyPopupRomaji'),
   liveSelRomajiBody: document.getElementById('liveSelRomajiBody'),
+  liveSelInstantVocabWrap: document.getElementById('liveSelInstantVocabWrap'),
+  liveSelInstantVocabLabel: document.getElementById('liveSelInstantVocabLabel'),
+  btnPopupSaveAllInstantVocab: document.getElementById('btnPopupSaveAllInstantVocab'),
+  liveSelInstantVocabBody: document.getElementById('liveSelInstantVocabBody'),
   liveSelEnglishWrap: document.getElementById('liveSelEnglishWrap'),
   liveSelEnglishLabel: document.getElementById('liveSelEnglishLabel'),
   btnCopyPopupStudyRomaji: document.getElementById('btnCopyPopupStudyRomaji'),

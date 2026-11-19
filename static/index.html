@@ -25,9 +25,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Roboto+Mono:wght@400;500&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/ort.webgpu.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20261118r8" />
+  <link rel="stylesheet" href="styles.css?v=20261118r10" />
 </head>
 <body class="min-h-screen lg:h-screen flex flex-col bg-white text-slate-900 lg:overflow-hidden">
 
@@ -59,8 +58,8 @@
             <path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/>
           </svg>
           <span>Settings</span>
-          <span id="settingsSummaryChip" class="hidden md:inline-block max-w-[180px] xl:max-w-[240px] truncate align-bottom pl-1 text-[11px] font-normal text-slate-500">
-            Turbo INT8 · Manga OCR · RTL
+          <span id="settingsSummaryChip" class="hidden md:inline-block max-w-[170px] xl:max-w-[220px] truncate align-bottom pl-1 text-[11px] font-normal text-slate-500">
+            RT-DETRv2 · RTL
           </span>
         </button>
 
@@ -92,19 +91,19 @@
           <svg class="w-4 h-4 md-primary-icon shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M3 5v4h2V5h4V3H5c-1.1 0-2 .9-2 2zm2 10H3v4c0 1.1.9 2 2 2h4v-2H5v-4zm14 4h-4v2h4c1.1 0 2-.9 2-2v-4h-2v4zm0-16h-4v2h4v4h2V5c0-1.1-.9-2-2-2z"/>
           </svg>
-          <span id="detectAllBoxesLabel">Detect All Boxes</span>
+          <span id="detectAllBoxesLabel">Detect All</span>
         </button>
 
-        <button id="btnExtractPage" type="button" class="md-btn-tonal inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition">
-          <span>Extract Current Page</span>
+        <button id="btnExtractPage" type="button" class="md-btn-tonal inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition" title="Detect speech bubbles and extract Japanese text on the current page">
+          <span>Extract Page</span>
         </button>
 
-        <button id="btnExtractAll" type="button" class="md-btn-filled inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded text-xs font-medium transition">
+        <button id="btnExtractAll" type="button" class="md-btn-filled inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition" title="Detect speech bubbles and extract Japanese text across all loaded pages">
           <!-- Material Icon: document_scanner -->
           <svg class="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M7 3H4v3H2V1h5v2zm15 3V1h-5v2h3v3h2zM7 21H4v-3H2v5h5v-2zm13-3v3h-3v2h5v-5h-2zM19 18c0 1.1-.9 2-2 2H7c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2v12zM15 8H9v2h6V8zm0 3H9v2h6v-2zm0 3H9v2h6v-2z"/>
           </svg>
-          <span id="extractAllLabel">Extract All Japanese Text</span>
+          <span id="extractAllLabel">Extract All</span>
         </button>
 
         <button id="btnStopExtract" type="button" class="hidden items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-rose-600 text-white hover:bg-rose-700 transition">
@@ -119,65 +118,61 @@
     <div id="settingsPopover" class="hidden md-settings-sheet px-3 sm:px-4 pt-3 pb-2.5 border-t border-slate-200 space-y-2.5 text-xs">
       <!-- Primary M3 Outlined Select Grid: Concise Labels + Supporting Helper Text -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-3 gap-y-2.5">
-        <!-- 1. Detector -->
+        <!-- 1. Boundary Detector -->
         <div class="m3-select-group min-w-0">
           <div class="m3-outlined-field">
-            <label for="selectDetector" class="m3-floating-label">Detector</label>
+            <label for="selectDetector" class="m3-floating-label">Boundary</label>
             <select id="selectDetector" class="m3-select-native" aria-describedby="helperDetector">
-              <option value="rtdetr-int8" selected>Neural Turbo (INT8)</option>
-              <option value="ctd-onnx">Mokuro CTD (WebGPU)</option>
-              <option value="bubble-heuristic">Fast Heuristic</option>
-              <option value="whole-image">Whole Image</option>
+              <option value="rtdetr-int8" selected>RT-DETRv2</option>
+              <option value="ctd-onnx">Mokuro CTD</option>
             </select>
             <svg class="m3-select-caret" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>
           </div>
-          <span id="helperDetector" class="m3-helper-text">RT-DETRv2 · 11 MB · Default</span>
+          <span id="helperDetector" class="m3-helper-text">11 MB INT8 · Default</span>
         </div>
 
-        <!-- 2. Japanese OCR -->
+        <!-- 2. OCR Engine -->
         <div class="m3-select-group min-w-0">
           <div class="m3-outlined-field">
-            <label for="selectOcrEngine" class="m3-floating-label">Japanese OCR</label>
+            <label for="selectOcrEngine" class="m3-floating-label">OCR Engine</label>
             <select id="selectOcrEngine" class="m3-select-native" aria-describedby="helperOcrEngine">
-              <option value="manga-ocr-cpt" selected>Manga OCR v2 (CPT)</option>
-              <option value="manga-ocr">Manga OCR Classic</option>
-              <option value="tesseract-jpn">Tesseract v5 JPN</option>
+              <option value="manga-ocr-cpt" selected>Manga OCR v2</option>
             </select>
             <svg class="m3-select-caret" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>
           </div>
-          <span id="helperOcrEngine" class="m3-helper-text">JP-only SOTA · 0.86% CER</span>
+          <span id="helperOcrEngine" class="m3-helper-text">0.86% CER · JP-only</span>
         </div>
 
         <!-- 3. Reading Order -->
         <div class="m3-select-group min-w-0">
           <div class="m3-outlined-field">
-            <label for="selectReadingOrder" class="m3-floating-label">Reading Order</label>
+            <label for="selectReadingOrder" class="m3-floating-label">Order</label>
             <select id="selectReadingOrder" class="m3-select-native" aria-describedby="helperReadingOrder">
-              <option value="rtl" selected>Manga (Right → Left)</option>
-              <option value="ttb">Webtoon (Top → Bottom)</option>
-              <option value="ltr">Comic (Left → Right)</option>
+              <option value="rtl" selected>Manga (RTL)</option>
+              <option value="ttb">Webtoon (TTB)</option>
+              <option value="ltr">Comic (LTR)</option>
             </select>
             <svg class="m3-select-caret" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>
           </div>
-          <span id="helperReadingOrder" class="m3-helper-text">Japanese manga panels</span>
+          <span id="helperReadingOrder" class="m3-helper-text">Right → Left</span>
         </div>
 
         <!-- 4. Parallel Workers -->
         <div class="m3-select-group min-w-0" title="Number of concurrent OS-thread Web Workers for parallel page detection &amp; multi-bubble OCR">
           <div class="m3-outlined-field">
-            <label for="selectWorkerPoolSize" class="m3-floating-label">Worker Threads</label>
+            <label for="selectWorkerPoolSize" class="m3-floating-label">Workers</label>
             <select id="selectWorkerPoolSize" class="m3-select-native" aria-describedby="helperWorkerPool">
-              <option value="auto" selected>Auto Multi-Core</option>
+              <option value="auto" selected>Auto</option>
               <option value="2">2 Workers</option>
               <option value="3">3 Workers</option>
               <option value="4">4 Workers</option>
               <option value="6">6 Workers</option>
               <option value="8">8 Workers</option>
-              <option value="1">1 Worker (Low RAM)</option>
+              <option value="1">1 Worker</option>
             </select>
             <svg class="m3-select-caret" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>
           </div>
-          <span id="helperWorkerPool" class="m3-helper-text">Auto-scaled to CPU cores</span>
+          <span id="helperWorkerPool" class="m3-helper-text">Auto-scaled threads</span>
         </div>
       </div>
 
@@ -188,13 +183,13 @@
           <svg class="m3-chip-check w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
           </svg>
-          <span class="truncate">Auto-prune non-JP / false boxes</span>
+          <span class="truncate">Prune non-JP boxes</span>
         </label>
 
         <div class="flex items-center gap-1.5 ml-auto">
           <button id="btnOpenStackModal" type="button" class="md-btn-tonal inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition">
             <svg class="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></svg>
-            <span>Model Info &amp; CLI</span>
+            <span>Open Source &amp; CLI</span>
           </button>
           <button id="btnCloseSettings" type="button" class="md-btn-text px-2.5 py-1 rounded text-xs font-medium transition">
             Hide
@@ -210,8 +205,8 @@
           <button id="btnConnectBackend" type="button" class="md-btn-outlined px-2.5 py-1 rounded text-xs font-medium transition">
             Connect
           </button>
-          <span id="backendStatusText" class="text-[11px] font-normal text-slate-500">
-            Browser Multi-Worker Pool active (start local server for CUDA/DirectML/MPS GPU batch speed)
+          <span id="backendStatusText" class="text-[11px] font-normal text-slate-500 truncate max-w-full">
+            Browser workers active (connect for local GPU)
           </span>
         </div>
       </div>
@@ -229,10 +224,10 @@
           <div class="m3-inline-select-wrap">
             <select id="selectGeminiModel" class="m3-inline-select" title="Gemini model used for translation, romaji, and grammar breakdown">
               <option value="auto" selected>Auto Flash</option>
-              <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
-              <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
-              <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-              <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite</option>
+              <option value="gemini-3.8-flash">3.8 Flash</option>
+              <option value="gemini-3.5-flash-lite">3.5 Lite</option>
+              <option value="gemini-2.5-flash">2.5 Flash</option>
+              <option value="gemini-2.5-flash-lite">2.5 Lite</option>
             </select>
             <svg class="m3-select-caret" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>
           </div>
@@ -542,7 +537,7 @@
             </svg>
             <h3 class="text-base font-medium text-slate-900">Upload Manga Pages</h3>
             <p class="text-xs text-slate-600 mt-1.5 leading-relaxed">
-              Drop a folder or JPG/PNG images into the left panel, then click <strong>Extract All Japanese Text</strong>.
+              Drop a folder or JPG/PNG images into the left panel, then click <strong>Extract All</strong>.
             </p>
             <div class="mt-4 flex flex-wrap items-center justify-center gap-2">
               <button id="btnEmptyUploadFolder" type="button" class="md-btn-filled px-3.5 py-2 rounded text-xs font-medium">Upload Folder</button>
@@ -634,7 +629,7 @@
 
       <!-- View 1: Full Manga Japanese Script -->
       <div id="panelAllText" class="flex-1 flex flex-col overflow-hidden p-3">
-        <textarea id="fullMangaTextarea" readonly placeholder="Click &quot;Extract All Japanese Text&quot; in the top bar to detect speech bubbles and transcribe Japanese dialogue across your pages…" class="jp-text flex-1 w-full resize-none rounded border border-slate-300 bg-white p-3 text-base leading-relaxed text-slate-900 focus:outline-none custom-scroll"></textarea>
+        <textarea id="fullMangaTextarea" readonly placeholder="Click &quot;Extract All&quot; in the top bar to detect speech bubbles and transcribe Japanese dialogue across your pages…" class="jp-text flex-1 w-full resize-none rounded border border-slate-300 bg-white p-3 text-base leading-relaxed text-slate-900 focus:outline-none custom-scroll"></textarea>
       </div>
 
       <!-- View 2: Current Page Bubbles Inspector -->
@@ -690,9 +685,14 @@
                 <td class="py-2 pl-3">Default 11.1 MB RT-DETRv2 detector; <code>comic-text-detector</code> (95 MB) is also included with WebGPU support.</td>
               </tr>
               <tr>
-                <td class="py-2 pr-3 font-medium"><a href="https://github.com/naptha/tesseract.js/" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">naptha/tesseract.js</a></td>
-                <td class="py-2 px-3 whitespace-nowrap">WASM v5.1.1 · Apache-2.0</td>
-                <td class="py-2 pl-3">Lightweight (~15 MB) browser fallback engine.</td>
+                <td class="py-2 pr-3 font-medium"><a href="https://github.com/takuyaa/kuromoji.js/" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">kuromoji.js</a> + <a href="https://github.com/birchill/10ten-ja-reader" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">10ten</a> / <a href="https://github.com/yomidevs/yomitan" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">Yomitan</a></td>
+                <td class="py-2 px-3 whitespace-nowrap">0ms Offline · Apache-2.0</td>
+                <td class="py-2 pl-3">Client-side MeCab-IPADIC segmentation, Hepburn Romaji, and rule-based verb/adjective de-inflection.</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-3 font-medium"><a href="https://www.edrdg.org/jmdict/j_jmdict.html" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">EDRDG JMdict</a> + <a href="https://github.com/evanclan/OpenJLPT" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">OpenJLPT</a></td>
+                <td class="py-2 px-3 whitespace-nowrap">Offline Dict · CC BY-SA 4.0</td>
+                <td class="py-2 pl-3">Instant Japanese-English glosses via <a href="https://github.com/scriptin/jmdict-simplified" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">jmdict-simplified</a> &amp; IndexedDB, with <a href="https://github.com/ankitects/anki" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">Anki</a> <code>.apkg</code> SQLite3 export.</td>
               </tr>
             </tbody>
           </table>
@@ -742,8 +742,11 @@ mokuro "/path/to/manga/volume_folder"</pre>
     </div>
     <div id="liveSelPreviewBody" class="md-live-sel-body jp-text"></div>
     <div class="md-live-study-bar">
-      <button id="btnTogglePopupRomaji" type="button" aria-pressed="false" class="md-romaji-pill" title="Show or hide instant offline Hepburn Romaji">
+      <button id="btnTogglePopupRomaji" type="button" aria-pressed="false" class="md-romaji-pill" title="Show or hide instant offline Hepburn Romaji (0ms, no API key)">
         Romaji
+      </button>
+      <button id="btnTogglePopupInstantVocab" type="button" aria-pressed="false" class="md-romaji-pill" title="Show or hide instant offline JMdict / Kuromoji vocabulary breakdown (0ms, no API key)">
+        Instant Vocab
       </button>
       <button id="btnPopupBreakdown" type="button" aria-pressed="false" class="md-romaji-pill" title="Translate into English + verified Romaji and break down vocabulary &amp; grammar in one Gemini request">
         EN + Romaji + Vocab &amp; Grammar
@@ -767,6 +770,15 @@ mokuro "/path/to/manga/volume_folder"</pre>
           </button>
         </div>
         <div id="liveSelRomajiBody" class="md-live-romaji-body"></div>
+      </div>
+      <div id="liveSelInstantVocabWrap" class="hidden md-live-instant-vocab-wrap">
+        <div class="flex items-center justify-between gap-2 mb-1">
+          <span id="liveSelInstantVocabLabel" class="md-live-instant-vocab-label">Instant Vocab · JMdict</span>
+          <button id="btnPopupSaveAllInstantVocab" type="button" class="hidden md-vocab-save-btn" title="Save all content vocabulary words from this instant breakdown">
+            + Save All
+          </button>
+        </div>
+        <div id="liveSelInstantVocabBody" class="space-y-1"></div>
       </div>
       <div id="liveSelEnglishWrap" class="hidden md-live-english-wrap">
         <div class="flex items-center justify-between gap-2 mb-0.5">
@@ -825,12 +837,13 @@ mokuro "/path/to/manga/volume_folder"</pre>
     <div id="batchStudyResultsPanel" class="hidden md-batch-results-panel custom-scroll"></div>
   </div>
 
-  <script src="js/core-and-study.js?v=20261118r8"></script>
-  <script src="js/offline-romaji.js?v=20261118r8"></script>
-  <script src="js/workers-and-bridge.js?v=20261118r8"></script>
-  <script src="js/detectors-and-ocr.js?v=20261118r8"></script>
-  <script src="js/ingest-and-samples.js?v=20261118r8"></script>
-  <script src="js/stage-and-bubbles.js?v=20261118r8"></script>
-  <script src="js/controls-and-theme.js?v=20261118r8"></script>
+  <script src="js/core-and-study.js?v=20261118r10"></script>
+  <script src="js/offline-romaji.js?v=20261118r10"></script>
+  <script src="js/instant-vocab.js?v=20261118r10"></script>
+  <script src="js/workers-and-bridge.js?v=20261118r10"></script>
+  <script src="js/detectors-and-ocr.js?v=20261118r10"></script>
+  <script src="js/ingest-and-samples.js?v=20261118r10"></script>
+  <script src="js/stage-and-bubbles.js?v=20261118r10"></script>
+  <script src="js/controls-and-theme.js?v=20261118r10"></script>
 </body>
 </html>

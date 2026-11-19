@@ -798,7 +798,7 @@ class HybridMangaOcrEngine:
       self.accelerator_label = f"{label} ({num_workers}x Parallel Pool)"
 
   def ensure_loaded(self, engine_key: str = "manga-ocr-cpt") -> None:
-    norm_key = "manga-ocr" if engine_key == "manga-ocr" else "manga-ocr-cpt"
+    norm_key = "manga-ocr-cpt"
     repo_id = OCR_REPO_MAP[norm_key]
 
     if self.use_torch:
@@ -932,7 +932,7 @@ class HybridMangaOcrEngine:
       return {"text": "", "conf": 0.0}
     if not _has_visible_ink(pil_img):
       return {"text": "", "conf": 0.0}
-    norm_key = "manga-ocr" if engine_key == "manga-ocr" else "manga-ocr-cpt"
+    norm_key = "manga-ocr-cpt"
     pool, vocab = self._loaded_onnx_pools[norm_key]
     arr = _preprocess_crop_224(pil_img)[None, ...]
     enc, dec = pool.get()
@@ -1089,7 +1089,7 @@ class HybridMangaOcrEngine:
   ) -> list[dict[str, Any]]:
     if not crops or (is_cancelled and is_cancelled()):
       return [{"text": "", "conf": 0.0} for _ in crops]
-    norm_key = "manga-ocr" if engine_key == "manga-ocr" else "manga-ocr-cpt"
+    norm_key = "manga-ocr-cpt"
     self.ensure_loaded(norm_key)
     if is_cancelled and is_cancelled():
       return [{"text": "", "conf": 0.0} for _ in crops]
@@ -1634,6 +1634,102 @@ def build_app(workers: int, force_onnx: bool = False, gpu_batch_size: int = 48) 
         zf.write(db_path, arcname="collection.anki2")
         zf.writestr("media", "{}")
       return mem_zip.getvalue()
+
+  jmdict_state: dict[str, Any] = {"loaded": False, "index": {}, "lock": threading.Lock()}
+
+  def _ensure_local_jmdict_index_sync() -> dict[str, dict[str, Any]]:
+    if jmdict_state["loaded"]:
+      return jmdict_state["index"]
+    with jmdict_state["lock"]:
+      if jmdict_state["loaded"]:
+        return jmdict_state["index"]
+      compact_cache = CACHE_DIR / "jmdict_eng_common_compact_v1.json"
+      if compact_cache.exists() and compact_cache.stat().st_size > 1024:
+        try:
+          jmdict_state["index"] = json.loads(compact_cache.read_text(encoding="utf-8"))
+          jmdict_state["loaded"] = True
+          return jmdict_state["index"]
+        except Exception:
+          pass
+
+      # Download scriptin/jmdict-simplified common English JSON zip (pinned + latest GitHub release fallback)
+      primary_zip_url = (
+          "https://github.com/scriptin/jmdict-simplified/releases/download/"
+          "3.6.2%2B20261109214828/jmdict-eng-common-3.6.2+20261109214828.json.zip"
+      )
+      zip_dest = CACHE_DIR / "jmdict_eng_common.json.zip"
+      if not zip_dest.exists() or zip_dest.stat().st_size < 1024:
+        urls_to_try = [primary_zip_url]
+        try:
+          req_latest = urllib.request.Request(
+              "https://api.github.com/repos/scriptin/jmdict-simplified/releases/latest",
+              headers={"User-Agent": "AnkiSuru/4.0"},
+          )
+          with urllib.request.urlopen(req_latest, timeout=15) as r_lat:
+            rel_data = json.loads(r_lat.read().decode("utf-8"))
+            for asset in rel_data.get("assets") or []:
+              aname = str(asset.get("name") or "")
+              if aname.startswith("jmdict-eng-common-") and aname.endswith(".json.zip"):
+                dl_url = str(asset.get("browser_download_url") or "")
+                if dl_url and dl_url not in urls_to_try:
+                  urls_to_try.append(dl_url)
+        except Exception:
+          pass
+
+        for u in urls_to_try:
+          try:
+            ensure_cached_file("jmdict_eng_common.json.zip", u)
+            break
+          except Exception:
+            continue
+
+      if zip_dest.exists() and zip_dest.stat().st_size > 1024:
+        try:
+          idx_map: dict[str, dict[str, Any]] = {}
+          with zipfile.ZipFile(zip_dest, "r") as zf:
+            json_names = [n for n in zf.namelist() if n.endswith(".json")]
+            if json_names:
+              raw_jmdict = json.loads(zf.read(json_names[0]).decode("utf-8"))
+              for w in raw_jmdict.get("words") or []:
+                kanji_list = [k.get("text") for k in (w.get("kanji") or []) if k.get("text")]
+                kana_list = [k.get("text") for k in (w.get("kana") or []) if k.get("text")]
+                senses = w.get("sense") or []
+                glosses: list[str] = []
+                pos_codes: list[str] = []
+                for s in senses[:2]:
+                  for p in s.get("partOfSpeech") or []:
+                    if p not in pos_codes:
+                      pos_codes.append(p)
+                  for g in s.get("gloss") or []:
+                    gt = str(g.get("text") or "").strip()
+                    if gt and gt not in glosses:
+                      glosses.append(gt)
+                if not glosses:
+                  continue
+                head = kanji_list[0] if kanji_list else (kana_list[0] if kana_list else "")
+                read = kana_list[0] if kana_list else head
+                if not head:
+                  continue
+                rec = {"w": head, "r": read, "m": "; ".join(glosses[:4]), "p": pos_codes[0] if pos_codes else "Word"}
+                for k_str in kanji_list + kana_list:
+                  if k_str and k_str not in idx_map:
+                    idx_map[k_str] = rec
+          if idx_map:
+            compact_cache.write_text(json.dumps(idx_map, ensure_ascii=False), encoding="utf-8")
+            jmdict_state["index"] = idx_map
+        except Exception:
+          pass
+
+      jmdict_state["loaded"] = True
+      return jmdict_state["index"]
+
+  @app.post("/api/jmdict_lookup")
+  async def api_jmdict_lookup(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    terms = [str(t).strip() for t in ((payload or {}).get("terms") or []) if str(t).strip()][:80]
+    idx_map = await asyncio.to_thread(_ensure_local_jmdict_index_sync)
+    found = {t: idx_map[t] for t in terms if t in idx_map}
+    return {"ok": True, "entries": found}
 
   @app.post("/api/export_anki_apkg")
   async def api_export_anki_apkg(request: Request) -> Response:

@@ -263,44 +263,25 @@ async function detectComicTextOnnx(imgEl) {
 }
 
 async function detectBlocksForPage(imgEl) {
-  const origW = imgEl.naturalWidth || imgEl.width;
-  const origH = imgEl.naturalHeight || imgEl.height;
   let blocks = [];
-
-  if (state.detectorMode === 'whole-image') {
-    blocks = [{
-      id: 'blk_' + Math.random().toString(36).slice(2, 9),
-      x1: 0,
-      y1: 0,
-      x2: origW,
-      y2: origH,
-      conf: 1.0,
-      text: '',
-      charConf: null
-    }];
-  } else if (state.detectorMode === 'rtdetr-int8') {
-    try {
-      blocks = await detectComicTextRtdetrInt8(imgEl);
-    } catch (err) {
-      if (err && err.message === 'ABORTED') throw err;
-      showToast('Neural Turbo detector unavailable (' + err.message + '); using Fast Bubble Heuristic.', 'warn');
-      blocks = detectSpeechBubblesHeuristic(imgEl);
-    }
-  } else if (state.detectorMode === 'ctd-onnx') {
+  if (state.detectorMode === 'ctd-onnx') {
     try {
       blocks = await detectComicTextOnnx(imgEl);
     } catch (err) {
       if (err && err.message === 'ABORTED') throw err;
-      showToast('comic-text-detector unavailable (' + err.message + '); using Fast Bubble Heuristic.', 'warn');
+      showToast('Mokuro CTD unavailable (' + err.message + '); using offline fallback.', 'warn');
       blocks = detectSpeechBubblesHeuristic(imgEl);
     }
   } else {
-    blocks = detectSpeechBubblesHeuristic(imgEl);
+    try {
+      blocks = await detectComicTextRtdetrInt8(imgEl);
+    } catch (err) {
+      if (err && err.message === 'ABORTED') throw err;
+      showToast('RT-DETRv2 unavailable (' + err.message + '); using offline fallback.', 'warn');
+      blocks = detectSpeechBubblesHeuristic(imgEl);
+    }
   }
-
-  if (state.detectorMode !== 'whole-image') {
-    blocks = filterVisuallyPlausibleBoxesOnImage(imgEl, blocks);
-  }
+  blocks = filterVisuallyPlausibleBoxesOnImage(imgEl, blocks);
   return sortBlocksByReadingOrder(blocks, state.readingOrder);
 }
 
@@ -337,7 +318,7 @@ async function loadMocrVocabForVariant(variant) {
 }
 
 async function prefetchMangaOcrAssets() {
-  let variant = state.ocrEngine === 'manga-ocr' ? 'manga-ocr' : 'manga-ocr-cpt';
+  let variant = 'manga-ocr-cpt';
   let encKey = variant === 'manga-ocr-cpt' ? 'mocr_cpt_enc_q8_v2' : 'mocr_enc_q8_v1';
   let decKey = variant === 'manga-ocr-cpt' ? 'mocr_cpt_dec_q8_v2' : 'mocr_dec_q8_v1';
   let encBuf = null;
@@ -580,52 +561,6 @@ async function recognizeCropMangaOcr(imgEl, box) {
   return { text: decodeTokenIdsToJapanese(ids), charConf: avgConf };
 }
 
-// -----------------------------------------------------------------------
-// OCR Engine 2: Tesseract.js v5 Multi-Worker Scheduler
-// -----------------------------------------------------------------------
-async function ensureTesseractPoolReady() {
-  const targetCount = Math.min(4, getDesiredPoolSize('mocr'));
-  if (runtime.tesseractScheduler && runtime.tesseractWorkers.length >= targetCount) {
-    return runtime.tesseractScheduler;
-  }
-  if (!window.Tesseract) throw new Error('Tesseract.js CDN failed to load.');
-  if (!runtime.tesseractScheduler) {
-    runtime.tesseractScheduler = window.Tesseract.createScheduler();
-  }
-  const needed = targetCount - runtime.tesseractWorkers.length;
-  setProgress(true, 'Spawning ' + targetCount + ' parallel Tesseract.js workers…', 25);
-  const created = await Promise.all(
-    Array.from({ length: needed }, () => window.Tesseract.createWorker(['jpn_vert', 'jpn'], 1))
-  );
-  for (const w of created) {
-    runtime.tesseractScheduler.addWorker(w);
-    runtime.tesseractWorkers.push(w);
-  }
-  return runtime.tesseractScheduler;
-}
-
-async function recognizeCropTesseract(imgEl, box) {
-  const scheduler = await ensureTesseractPoolReady();
-  const cropW = Math.max(1, box.x2 - box.x1);
-  const cropH = Math.max(1, box.y2 - box.y1);
-
-  const cvs = document.createElement('canvas');
-  cvs.width = cropW * 2;
-  cvs.height = cropH * 2;
-  const ctx = cvs.getContext('2d');
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, cvs.width, cvs.height);
-  ctx.drawImage(imgEl, box.x1, box.y1, cropW, cropH, 0, 0, cvs.width, cvs.height);
-
-  const res = await scheduler.addJob('recognize', cvs);
-  const raw = (res && res.data && res.data.text) ? res.data.text : '';
-  const cleaned = raw.replace(/\s+/g, '').trim();
-  const conf = (res && res.data && typeof res.data.confidence === 'number')
-    ? res.data.confidence / 100
-    : null;
-  return { text: cleaned, charConf: normalizeConf01(conf) };
-}
-
 async function recognizeSingleBlock(imgEl, box) {
   if (state.nativeBackend.connected) {
     try {
@@ -639,10 +574,7 @@ async function recognizeSingleBlock(imgEl, box) {
       updateAccelBadgeText();
     }
   }
-  if (isMangaOcrFamily(state.ocrEngine)) {
-    return recognizeCropMangaOcr(imgEl, box);
-  }
-  return recognizeCropTesseract(imgEl, box);
+  return recognizeCropMangaOcr(imgEl, box);
 }
 
 // -----------------------------------------------------------------------
@@ -707,7 +639,7 @@ async function runParallelPagesDetectionInternal(pagesToDetect, progressPrefix) 
   let totalBoxes = 0;
 
   // Fast Path 1: Connected Local Native Python GPU / All-Core Server (pipelined 8-page chunks)
-  if (state.nativeBackend.connected && state.detectorMode !== 'whole-image' && state.detectorMode !== 'bubble-heuristic') {
+  if (state.nativeBackend.connected) {
     try {
       const chunkSize = 8;
       const chunks = [];
@@ -774,15 +706,16 @@ async function runParallelPagesDetectionInternal(pagesToDetect, progressPrefix) 
   }
 
   // Fast Path 2: Browser Multi-Worker Parallel Pool (right-sized to page count so 1-page extraction initializes 1 worker instantly)
-  if (state.detectorMode === 'rtdetr-int8') {
-    await ensureRtdetrPoolReady(pagesToDetect.length);
-  } else if (state.detectorMode === 'ctd-onnx') {
+  if (state.detectorMode === 'ctd-onnx') {
     await ensureCtdPoolReady(pagesToDetect.length);
+  } else {
+    await ensureRtdetrPoolReady(pagesToDetect.length);
   }
 
-  const poolConcurrency = (state.detectorMode === 'rtdetr-int8' || state.detectorMode === 'ctd-onnx')
-    ? Math.min(pagesToDetect.length, Math.max(1, runtime.workerSlots.length || getDesiredPoolSize('rtdetr')))
-    : Math.min(pagesToDetect.length, 4);
+  const poolConcurrency = Math.min(
+    pagesToDetect.length,
+    Math.max(1, runtime.workerSlots.length || getDesiredPoolSize('rtdetr'))
+  );
 
   let cursor = 0;
   let completed = 0;
@@ -895,7 +828,7 @@ async function extractPagesQueue(targetPages) {
   try {
     // Ultra-Fast Path A: Whole-Page Pipelined Server Extraction (ZERO JS image decode, ZERO JS canvas.toBlob cropping!)
     let handledByServerPipeline = false;
-    if (state.nativeBackend.connected && isMangaOcrFamily(state.ocrEngine) && state.detectorMode !== 'whole-image' && state.detectorMode !== 'bubble-heuristic') {
+    if (state.nativeBackend.connected) {
       try {
         // Sort any already-detected boxes into reading order before sending coordinates to server
         for (const p of targetPages) {
@@ -1018,7 +951,7 @@ async function extractPagesQueue(targetPages) {
     if (!handledByServerPipeline) {
       const undetected = targetPages.filter((p) => !p.boxesDetected && (!p.blocks || p.blocks.length === 0));
       // Overlap OCR model download/IDB read concurrently with Stage 1 box detection!
-      const ocrPrefetchPromise = (undetected.length > 0 && isMangaOcrFamily(state.ocrEngine))
+      const ocrPrefetchPromise = undetected.length > 0
         ? prefetchMangaOcrAssets().catch(() => null)
         : null;
       if (undetected.length > 0) {
@@ -1030,11 +963,7 @@ async function extractPagesQueue(targetPages) {
 
       const totalBubblesAll = targetPages.reduce((acc, p) => acc + ((p.blocks && p.blocks.length) || 0), 0);
       if (totalBubblesAll > 0) {
-        if (isMangaOcrFamily(state.ocrEngine)) {
-          await ensureMangaOcrPoolReady(totalBubblesAll);
-        } else {
-          await ensureTesseractPoolReady();
-        }
+        await ensureMangaOcrPoolReady(totalBubblesAll);
       }
 
       let doneBubblesGlobal = 0;
@@ -1068,9 +997,10 @@ async function extractPagesQueue(targetPages) {
 
         if (windowJobs.length === 0) continue;
 
-        const activeWorkerCount = isMangaOcrFamily(state.ocrEngine)
-          ? Math.max(1, runtime.workerSlots.filter((s) => s.loaded.mocr).length || getDesiredPoolSize('mocr'))
-          : Math.max(1, runtime.tesseractWorkers.length || 1);
+        const activeWorkerCount = Math.max(
+          1,
+          runtime.workerSlots.filter((s) => s.loaded.mocr).length || getDesiredPoolSize('mocr')
+        );
         const concurrency = Math.min(windowJobs.length, activeWorkerCount);
         let jobCursor = 0;
 
